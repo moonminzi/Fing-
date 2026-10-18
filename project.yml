@@ -61,6 +61,11 @@ targets:
           - _hap._tcp
           - _companion-link._tcp
           - _spotify-connect._tcp
+          - _adisk._tcp
+          - _workstation._tcp
+          - _apple-mobdev2._tcp
+          - _hue._tcp
+          - _esphomelib._tcp
         # iOS는 SSID를 알려 줄 때 정확한 위치 권한을 요구한다(위치 자체는 읽지 않음)
         NSLocationWhenInUseUsageDescription: 연결된 Wi-Fi 이름을 읽으려면 iOS가 위치 권한을 요구해요. 위치는 쓰거나 저장하지 않아요.
         NSLocationTemporaryUsageDescriptionDictionary:

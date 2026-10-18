@@ -11,15 +11,22 @@ public struct UPnPDevice: Hashable, Sendable {
     public var deviceType: String?
     /// SSDP 응답의 SERVER 머리("Linux/4.4 UPnP/1.0 Sonos/70.3")
     public var server: String?
+    /// 기기 고유 ID("uuid:2f402f80-da50-11e1-9b23-001788102201", Sonos는 "uuid:RINCON_…"). 버전 1 UUID면 MAC이 들어 있다
+    public var udn: String?
+    /// 설명에 MAC을 적어 두는 기기의 `<macAddress>`
+    public var macAddress: String?
 
     public init(friendlyName: String? = nil, manufacturer: String? = nil, modelName: String? = nil,
-                modelNumber: String? = nil, deviceType: String? = nil, server: String? = nil) {
+                modelNumber: String? = nil, deviceType: String? = nil, server: String? = nil,
+                udn: String? = nil, macAddress: String? = nil) {
         self.friendlyName = friendlyName
         self.manufacturer = manufacturer
         self.modelName = modelName
         self.modelNumber = modelNumber
         self.deviceType = deviceType
         self.server = server
+        self.udn = udn
+        self.macAddress = macAddress
     }
 
     /// deviceType의 짧은 이름("MediaRenderer")
@@ -98,7 +105,9 @@ public enum SSDP {
             modelName: element("modelName", in: xml),
             modelNumber: element("modelNumber", in: xml),
             deviceType: element("deviceType", in: xml),
-            server: server.flatMap(ServiceBanner.clean)
+            server: server.flatMap(ServiceBanner.clean),
+            udn: element("UDN", in: xml),
+            macAddress: element("macAddress", in: xml)
         )
         return device.friendlyName == nil && device.manufacturer == nil && device.modelName == nil ? nil : device
     }

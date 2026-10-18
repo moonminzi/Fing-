@@ -16,10 +16,12 @@ public struct DeviceNames: Hashable, Sendable {
     public var netbiosMAC: MACAddress?
     /// SSDP 유니캐스트로 읽은 UPnP 기기 설명
     public var upnp: UPnPDevice?
+    /// mDNS 호스트 이름의 IPv6 주소(AAAA)
+    public var ipv6: [IPv6Address]
 
     public init(dnsName: String? = nil, mdnsName: String? = nil, netbiosName: String? = nil,
                 services: [BonjourService] = [], model: String? = nil, netbiosMAC: MACAddress? = nil,
-                upnp: UPnPDevice? = nil) {
+                upnp: UPnPDevice? = nil, ipv6: [IPv6Address] = []) {
         self.dnsName = dnsName
         self.mdnsName = mdnsName
         self.netbiosName = netbiosName
@@ -27,6 +29,7 @@ public struct DeviceNames: Hashable, Sendable {
         self.model = model
         self.netbiosMAC = netbiosMAC
         self.upnp = upnp
+        self.ipv6 = ipv6
     }
 }
 
@@ -64,14 +67,15 @@ public struct NameResolver: DeviceNaming {
 
     public func names(for address: IPv4) async -> DeviceNames {
         async let dnsName = dns.hostName(for: address)
-        async let mdnsName = mdnsHostName(of: address)
+        async let mdnsHost = mdnsHost(of: address)
         async let details = mdnsServiceDetails(of: address)
         async let netbios = netbiosStatus(of: address)
         async let upnp = upnpDevice(of: address)
         let (services, model) = await details
         let status = await netbios
-        return await DeviceNames(dnsName: dnsName, mdnsName: mdnsName, netbiosName: status?.name,
-                                 services: services, model: model, netbiosMAC: status?.mac, upnp: upnp)
+        let host = await mdnsHost
+        return await DeviceNames(dnsName: dnsName, mdnsName: host.name, netbiosName: status?.name,
+                                 services: services, model: model, netbiosMAC: status?.mac, upnp: upnp, ipv6: host.ipv6)
     }
 
     /// SSDP 검색을 기기에 직접 보내고, 답의 LOCATION에서 설명 XML을 읽는다.
@@ -112,12 +116,32 @@ public struct NameResolver: DeviceNaming {
         return (services, model)
     }
 
-    private func mdnsHostName(of address: IPv4) async -> String? {
+    /// 역방향 PTR로 호스트 이름을 묻고, 그 이름의 IPv6 주소(AAAA)도 받는다. 답에 딸려 오지 않았으면 한 번 더 묻는다.
+    private func mdnsHost(of address: IPv4) async -> (name: String?, ipv6: [IPv6Address]) {
         let id = UInt16.random(in: 1...UInt16.max)
         let reverse = DNSMessage.reverseName(for: address)
         let query = DNSMessage.query(id: id, questions: [(reverse, DNSMessage.RecordType.ptr)])
-        guard let reply = await transport.exchange(query, with: address, port: 5353, timeout: timeout) else { return nil }
-        return Self.hostName(in: DNSMessage.records(in: reply, id: id), reverseName: reverse)
+        guard let reply = await transport.exchange(query, with: address, port: 5353, timeout: timeout) else { return (nil, []) }
+        let records = DNSMessage.records(in: reply, id: id)
+        guard let name = Self.hostName(in: records, reverseName: reverse) else { return (nil, []) }
+        var ipv6 = Self.ipv6(in: records, host: name)
+        if ipv6.isEmpty {
+            let id = UInt16.random(in: 1...UInt16.max)
+            let query = DNSMessage.query(id: id, questions: [(name, DNSMessage.RecordType.aaaa)])
+            if let reply = await transport.exchange(query, with: address, port: 5353, timeout: timeout) {
+                ipv6 = Self.ipv6(in: DNSMessage.records(in: reply, id: id), host: name)
+            }
+        }
+        return (name, ipv6)
+    }
+
+    /// 호스트 이름의 AAAA 레코드들(링크 로컬 먼저)
+    static func ipv6(in records: [DNSRecord], host: String) -> [IPv6Address] {
+        var found: [IPv6Address] = []
+        for record in records where record.name.caseInsensitiveCompare(host) == .orderedSame {
+            if case .aaaa(let address) = record.data, !found.contains(address) { found.append(address) }
+        }
+        return found.filter(\.isLinkLocal) + found.filter { !$0.isLinkLocal }
     }
 
     private func mdnsServices(of address: IPv4) async -> [BonjourService] {

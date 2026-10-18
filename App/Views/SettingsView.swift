@@ -12,7 +12,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Toggle("공유기에 MAC 묻기(SNMP)", isOn: $snmpEnabled)
+                    Toggle("SNMP로 MAC 묻기(공유기·기기)", isOn: $snmpEnabled)
                     if snmpEnabled {
                         LabeledContent("커뮤니티 문자열") {
                             TextField("public", text: $snmpCommunity)
@@ -24,7 +24,7 @@ struct SettingsView: View {
                 } header: {
                     Text("MAC 주소")
                 } footer: {
-                    Text("iOS는 다른 기기의 MAC 주소를 읽을 수 없어서, SNMP가 켜진 공유기·AP에 ARP 표를 물어봐요(UDP 161, 읽기만). 커뮤니티 문자열은 공유기 관리자가 정한 값이에요(보통 public). 응답이 없으면 윈도우 PC(NetBIOS)·애플 TV·스피커(AirPlay)가 스스로 알려 준 MAC만 보여요.")
+                    Text("iOS는 다른 기기의 MAC을 지워서 주기 때문에, 기기가 스스로 공개한 MAC을 모아요: NetBIOS(윈도우)·AirPlay·Time Machine·워크스테이션 광고, UPnP·프린터 기기 ID, IPv6 주소(EUI-64), Roku·삼성 TV·Hue·Shelly 정보 API. 이 스위치를 켜면 SNMP가 켜진 공유기·AP에 ARP 표를, 프린터·NAS 같은 기기에는 자기 인터페이스 MAC을 물어봐요(UDP 161, 읽기만). 커뮤니티 문자열은 관리자가 정한 값이에요(보통 public). 휴대폰은 Wi-Fi마다 무작위 MAC을 써서 제조사가 안 나와요.")
                 }
 
                 Section {

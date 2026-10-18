@@ -2,8 +2,8 @@ import Foundation
 
 /// 이더넷 MAC 주소.
 ///
-/// iOS는 다른 기기의 ARP 테이블을 읽지 못하므로, 기기가 스스로 알려 준 것(NetBIOS·AirPlay)이나
-/// 공유기에 SNMP로 물어본 것만 안다.
+/// iOS는 다른 기기의 ARP 테이블에서 MAC을 지워서 주므로, 기기가 스스로 공개한 것(NetBIOS·Bonjour·UPnP·IPv6·
+/// 기기 API·기기 SNMP)이나 공유기에 SNMP로 물어본 것으로 안다(`MACClues`, `MACProber`).
 public struct MACAddress: Hashable, Sendable, Codable, CustomStringConvertible {
     public let bytes: [UInt8]
 
@@ -87,6 +87,16 @@ public struct OUIDatabase: Sendable {
 public enum MACSource: String, Hashable, Sendable {
     case router = "공유기 ARP 표(SNMP)"
     case localARP = "이 기기 ARP 캐시"
+    /// 기기에 SNMP로 물은 자기 인터페이스 MAC(ifPhysAddress) — 프린터·NAS·AP·스위치
+    case deviceSNMP = "기기 SNMP(인터페이스 MAC)"
+    /// 기기의 정보 API가 알려 준 MAC — Roku·삼성 TV·Hue 브리지·Shelly
+    case deviceAPI = "기기 정보 API"
     case netbios = "NetBIOS 응답"
     case airplay = "AirPlay 광고"
+    /// Bonjour 광고에 든 MAC — Time Machine 디스크(waMa)·리눅스 워크스테이션·Wi-Fi 동기화·ESPHome·Hue
+    case bonjour = "Bonjour 광고"
+    /// UPnP 기기 ID·프린터 UUID(버전 1 UUID의 끝 12자리는 만든 기기의 MAC)·Sonos ID
+    case deviceID = "기기 ID(UUID)"
+    /// IPv6 주소의 EUI-64 인터페이스 ID(…ff:fe…)에 박힌 MAC
+    case ipv6 = "IPv6 주소(EUI-64)"
 }

@@ -30,7 +30,7 @@ struct NamingTests {
     }
 
     @Test func catalogMatchesInfoPlistList() {
-        #expect(BonjourCatalog.serviceTypes.count == 11)
+        #expect(BonjourCatalog.serviceTypes.count == 16)
         #expect(Set(BonjourCatalog.serviceTypes) == Set(BonjourCatalog.titles.keys))
         #expect(Set(BonjourCatalog.serviceTypes) == Set(BonjourCatalog.namingOrder))
     }

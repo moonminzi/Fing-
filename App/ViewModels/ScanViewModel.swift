@@ -24,6 +24,8 @@ final class ScanViewModel {
     static let bonjourGrace: Duration = .seconds(2)
     /// 이름 조회·배너 읽기를 동시에 돌리는 기기 수
     static let maxConcurrentLookups = 8
+    /// MAC을 직접 묻는 기기 수(답 없는 기기는 시간 초과까지 기다려서 더 많이 돌린다)
+    static let maxConcurrentProbes = 16
 
     /// 상세 화면의 포트 스캔 상태
     struct PortScanState: Equatable {
@@ -53,6 +55,7 @@ final class ScanViewModel {
     @ObservationIgnored private let naming: any DeviceNaming
     @ObservationIgnored private let arpReader: ARPTableReader
     @ObservationIgnored private let arpCache: any ARPCacheReading
+    @ObservationIgnored private let macProber: any MACProbing
     @ObservationIgnored private let vendorLookup: (MACAddress) -> String?
     @ObservationIgnored private let wakeSender = MagicPacketSender()
     /// 앱이 백그라운드로 간 뒤 진행 중인 스캔을 마무리하는 시간(약 30초)
@@ -81,6 +84,7 @@ final class ScanViewModel {
                                                 http: HTTPFetcher()),
         arpReader: ARPTableReader = ARPTableReader(transport: UDPExchange()),
         arpCache: any ARPCacheReading = SystemARPCache(),
+        macProber: any MACProbing = MACProber(transport: UDPExchange(), http: HTTPFetcher(timeout: .milliseconds(1500))),
         vendorLookup: @escaping (MACAddress) -> String? = VendorLookup.vendor(for:),
         bannerGrabber: any BannerGrabbing = BannerGrabber(),
         portScanner: any PortScanning = PortScanner(prober: TCPProber()),
@@ -93,6 +97,7 @@ final class ScanViewModel {
         self.naming = naming
         self.arpReader = arpReader
         self.arpCache = arpCache
+        self.macProber = macProber
         self.vendorLookup = vendorLookup
         self.bannerGrabber = bannerGrabber
         self.portScanner = portScanner
@@ -142,6 +147,12 @@ final class ScanViewModel {
         guard !devices.isEmpty else { return nil }
         let csv = DeviceCSV.make(Array(devices.values), isNew: baseline.isNew)
         return ScanExport(csv: csv, networkName: scannedNetwork?.ssid ?? scannedSubnet?.cidr ?? "network", date: .now)
+    }
+
+    /// MAC을 아는 기기 수 / 나를 뺀 기기 수
+    var macCoverage: (known: Int, total: Int) {
+        let others = devices.values.filter { !$0.isSelf }
+        return (others.filter { $0.mac != nil }.count, others.count)
     }
 
     /// 이 네트워크를 처음 스캔하는 중(그래서 "새 기기"를 표시하지 않는다)
@@ -266,8 +277,12 @@ final class ScanViewModel {
 
     private var legacyNetworkKey: String { scannedSubnet?.cidr ?? "" }
 
-    /// 기기 정보가 늘었을 때 따라 바뀌는 것: MAC 제조사, 별명
+    /// 기기 정보가 늘었을 때 따라 바뀌는 것: 기기가 공개한 MAC 단서, MAC 제조사, 별명
     private func refresh(_ address: IPv4) {
+        let vendorLookup = self.vendorLookup
+        if var device = devices[address], device.refreshReportedMACs(isRegistered: { vendorLookup($0) != nil }) {
+            devices[address] = device
+        }
         if let mac = devices[address]?.mac?.address {
             let vendor = vendorLookup(mac)
             if devices[address]?.macVendor != vendor {
@@ -371,8 +386,10 @@ final class ScanViewModel {
                 // 스캔하며 OS가 채운 이 기기 ARP 캐시에서 MAC을 먼저 거둔다(공짜, 권한 불필요)
                 applyLocalARP(on: network)
                 async let routerTable: Void = readRouterTable(on: network)
+                async let probes: Void = probeMACs()
                 await readBanners(of: devices.values.filter { !$0.isSelf && $0.banners.isEmpty })
                 await routerTable
+                await probes
             }
             // 새 주소가 더 안 들어오니 남은 이름 조회만 끝내면 된다
             lookupQueue.finish()
@@ -443,6 +460,30 @@ final class ScanViewModel {
             return
         }
         routerTableStatus = "SNMP 응답이 없어 MAC은 기기가 알려 준 것만 있어요(공유기에서 SNMP가 꺼져 있거나 커뮤니티 문자열이 달라요)."
+    }
+
+    /// 아직 MAC을 모르는 기기에 직접 묻는다: 기기 SNMP(설정에서 켰을 때)와 Roku·삼성 TV·Hue·Shelly 정보 API. 16대씩.
+    private func probeMACs() async {
+        let prober = macProber
+        let community = AppSettings.snmpEnabled ? AppSettings.snmpCommunity : nil
+        let targets = devices.values.filter { !$0.isSelf && $0.mac == nil && !$0.seenOnlyInRouterTable }
+            .map { ($0.address, $0.allOpenPorts) }
+        await withTaskGroup(of: (IPv4, (MACAddress, MACSource)?).self) { group in
+            var next = 0
+            func addNext() {
+                let (address, ports) = targets[next]
+                next += 1
+                group.addTask { (address, await prober.probe(address, openPorts: ports, community: community)) }
+            }
+            while next < min(Self.maxConcurrentProbes, targets.count) { addNext() }
+            while let (address, found) = await group.next() {
+                if case let (mac, source)? = found, devices[address]?.reportedMACs[source] != mac {
+                    devices[address]?.reportedMACs[source] = mac
+                    refresh(address)
+                }
+                if next < targets.count, !Task.isCancelled { addNext() }
+            }
+        }
     }
 
     /// 기기들의 웹·SSH 포트에서 배너를 읽어 합친다(기기 8대씩, 기기 안의 포트는 한꺼번에).

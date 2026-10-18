@@ -7,6 +7,10 @@ public enum SNMP {
     public static let arpTable: [UInt32] = [1, 3, 6, 1, 2, 1, 4, 22, 1, 2]
     /// ipNetToPhysicalPhysAddress(새 표): .1.3.6.1.2.1.4.35.1.4.<ifIndex>.1.4.<a>.<b>.<c>.<d> = MAC
     public static let physicalTable: [UInt32] = [1, 3, 6, 1, 2, 1, 4, 35, 1, 4]
+    /// ipAdEntIfIndex: .1.3.6.1.2.1.4.20.1.2.<a>.<b>.<c>.<d> = 그 IP가 붙은 인터페이스 번호
+    public static let addressInterface: [UInt32] = [1, 3, 6, 1, 2, 1, 4, 20, 1, 2]
+    /// ifPhysAddress: .1.3.6.1.2.1.2.2.1.6.<ifIndex> = 그 인터페이스의 MAC
+    public static let interfaceMAC: [UInt32] = [1, 3, 6, 1, 2, 1, 2, 2, 1, 6]
 
     public enum Value: Hashable, Sendable {
         case octets([UInt8])
@@ -19,6 +23,13 @@ public enum SNMP {
     public struct VarBind: Hashable, Sendable {
         public let oid: [UInt32]
         public let value: Value
+    }
+
+    /// Get 요청(v2c): 정확히 그 OID들의 값
+    public static func get(community: String, requestID: Int32, oids: [[UInt32]]) -> [UInt8] {
+        let varBinds = oids.flatMap { tlv(0x30, encodeOID($0) + [0x05, 0x00]) }
+        let pdu = tlv(0xA0, encodeInteger(Int64(requestID)) + encodeInteger(0) + encodeInteger(0) + tlv(0x30, varBinds))
+        return tlv(0x30, encodeInteger(1) + tlv(0x04, Array(community.utf8)) + pdu)
     }
 
     /// GetBulk 요청(v2c)

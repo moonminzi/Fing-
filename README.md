@@ -94,8 +94,9 @@ App/                        NagoNet 앱
 
 TCP 탐색과 함께 두 가지를 동시에 돌려 주소별로 합친다(`ScanViewModel.discover`).
 
-- **Bonjour**: `NWBrowser`로 11종(`_airplay`, `_raop`, `_googlecast`, `_ipp`, `_printer`, `_smb`, `_ssh`, `_http`, `_hap`,
-  `_companion-link`, `_spotify-connect`)을 TXT 레코드와 함께 찾는다. NWBrowser는 주소를 주지 않아서 서비스마다
+- **Bonjour**: `NWBrowser`로 16종(`_airplay`, `_raop`, `_googlecast`, `_ipp`, `_printer`, `_smb`, `_ssh`, `_http`, `_hap`,
+  `_companion-link`, `_spotify-connect`, 그리고 MAC이 든 광고 `_adisk`, `_workstation`, `_apple-mobdev2`, `_hue`,
+  `_esphomelib`)을 TXT 레코드와 함께 찾는다. NWBrowser는 주소를 주지 않아서 서비스마다
   NWConnection(IPv4만, Wi-Fi만)을 열어 시스템이 푼 주소(경로의 `remoteEndpoint`)만 읽고 바로 끊는다.
   서비스 포트가 막혀 연결이 끝나지 않아도 주소가 풀리는 순간 경로에 나타나므로 그때 읽는다.
   TCP 탐색 포트에 답하지 않는 기기(방화벽 켠 맥 등)도 Bonjour로 찾으면 목록에 더한다("Bonjour" 표시).
@@ -188,10 +189,30 @@ iPad는 기기를 고르지 않았을 때 오른쪽 칸 전체가, iPhone은 툴
 
 | 막힌 것 | 이 앱이 하는 것 |
 | --- | --- |
-| 다른 기기의 MAC·ARP 표 읽기(iOS 11부터 막힘) | ① 기기가 스스로 알려 준 MAC: NetBIOS 답의 unit ID(윈도우), AirPlay TXT `deviceid`·AirPlay 오디오 이름 앞자리(애플 TV·스피커) ② **공유기·AP에 SNMP로 ARP 표를 묻기**(UDP 161, 설정의 커뮤니티 문자열, 기본 public). 게이트웨이 → 관리형 AP 순으로 묻고, 탐색엔 안 잡혔지만 공유기가 최근에 본 기기도 "공유기 기록에만 있음"으로 더한다. MAC 앞자리로 IEEE 등록 목록(`App/Resources/oui.txt`, 약 4만 개)에서 제조사를 찾는다. 무작위 주소(비공개 Wi-Fi 주소)는 제조사가 없고 "휴대기기"의 단서로만 쓴다. 진짜 MAC은 같은 기기 찾기의 가장 강한 열쇠가 된다 |
+| 다른 기기의 MAC·ARP 표 읽기(iOS 11부터 막힘) | iOS는 ARP 캐시를 주지만 MAC을 `02:00:00:00:00:00`으로 지운다. 그래서 MAC을 다른 길로 모은다(아래 "MAC을 어디서 얻나"). ① 기기가 스스로 알려 준 MAC: NetBIOS 답의 unit ID(윈도우), AirPlay TXT `deviceid`·AirPlay 오디오 이름 앞자리(애플 TV·스피커), Bonjour 광고·UPnP·프린터 기기 ID·IPv6 EUI-64·기기 정보 API·기기 SNMP ② **공유기·AP에 SNMP로 ARP 표를 묻기**(UDP 161, 설정의 커뮤니티 문자열, 기본 public). 게이트웨이 → 관리형 AP 순으로 묻고, 탐색엔 안 잡혔지만 공유기가 최근에 본 기기도 "공유기 기록에만 있음"으로 더한다. MAC 앞자리로 IEEE 등록 목록(`App/Resources/oui.txt`, 약 4만 개)에서 제조사를 찾는다. 무작위 주소(비공개 Wi-Fi 주소)는 제조사가 없고 "휴대기기"의 단서로만 쓴다. 진짜 MAC은 같은 기기 찾기의 가장 강한 열쇠가 된다 |
 | raw 소켓 ICMP | 그대로 안 씀(root 필요). 핑은 SOCK_DGRAM ICMP로 한다 |
 | SSDP/UPnP 멀티캐스트(entitlement 필요) | **유니캐스트 SSDP**(UPnP 1.1): 기기 주소의 1900 포트로 직접 `M-SEARCH`를 보내고, 답의 LOCATION(그 기기 주소일 때만)에서 설명 XML을 읽어 이름(friendlyName)·제조사·모델·기기 종류를 얻는다. 멀티캐스트가 아니라 entitlement가 필요 없다 |
 | 백그라운드 상시 스캔 | ① 스캔 중에 앱을 나가면 iOS가 주는 약 30초 동안 마저 스캔(`beginBackgroundTask`), 시간이 다 되면 멈춤 ② 설정의 **새 기기 알림**을 켜면 `BGAppRefreshTask`로 iOS가 가끔(보통 몇 시간에 한 번) 깨워 줄 때 포트 하나로 빠르게 훑고, 기록에 없는 주소만 이름을 물어 다시 확인한 뒤 처음 보는 기기를 알림. 한 번 알린 기기는 다음 앱 스캔이 기록될 때까지 다시 알리지 않는다. 실시간 감시는 iOS에서 할 수 없다 |
+
+### MAC을 어디서 얻나
+
+iOS(그리고 안드로이드 10 이상)는 앱에 다른 기기의 MAC을 주지 않는다. 대신 기기가 같은 Wi-Fi에 **스스로 공개해 둔 MAC**을
+모은다(`MACClues`, `MACProber`). 믿는 순서는 아래 표의 위에서 아래로이고, 상세 화면의 "알게 된 곳"에 출처가 나온다.
+
+| 출처 | 어떤 기기 | 어떻게 |
+| --- | --- | --- |
+| 공유기 ARP 표(SNMP) | 모든 기기(공유기가 SNMP를 켰을 때) | 게이트웨이·관리형 AP에 ipNetToMediaPhysAddress GetBulk |
+| 기기 SNMP(인터페이스 MAC) | 프린터·NAS·관리형 AP·스위치 | 그 기기에 ipAdEntIfIndex.<IP> → ifPhysAddress.<번호> Get(UDP 161, 읽기만) |
+| 기기 정보 API | Roku, 삼성 TV(2016~), Hue 브리지, Shelly | `:8060/query/device-info`의 `wifi-mac`·`ethernet-mac`, `:8001/api/v2/`의 `device.wifiMac`, `/api/config`의 `mac`, `/shelly`의 `mac`(Hue·Shelly는 80 포트가 열린 기기만) |
+| NetBIOS 응답 | 윈도우 PC | NBSTAT 답의 unit ID |
+| AirPlay 광고 | 애플 TV·HomePod·에어플레이 스피커 | TXT `deviceid`, `_raop` 이름의 `MAC@` |
+| Bonjour 광고 | 시놀로지·QNAP·Time Machine 디스크, 리눅스(avahi), 아이폰·아이패드(Wi-Fi 동기화), ESPHome, Hue | `_adisk` TXT `sys=waMa=…`, `_workstation` 이름의 `[MAC]`, `_apple-mobdev2` 이름의 `MAC@`, `_esphomelib` TXT `mac`, `_hue` TXT `bridgeid`(가운데 FFFE를 빼면 MAC) |
+| 기기 ID(UUID) | UPnP 기기(Hue·공유기·TV), 프린터(브라더·엡손·캐논), 소노스 | 버전 1 UUID의 끝 12자리는 만든 기기의 MAC(RFC 4122). UPnP `UDN`, IPP TXT `UUID`, 소노스 `RINCON_<MAC>` |
+| IPv6 주소(EUI-64) | 프린터·TV·공유기·IoT(리눅스·임베디드) | mDNS로 호스트 이름의 AAAA를 묻고, 인터페이스 ID가 `…ff:fe…`면 가운데를 빼고 U/L 비트를 되돌린다 |
+
+기기 ID와 IPv6는 우연히 MAC 꼴이 될 수 있어서 **IEEE에 등록된 제조사 번호일 때만** 믿는다. 휴대폰은 Wi-Fi마다 무작위
+MAC을 써서, 어디서 얻든 제조사가 안 나온다(이건 MAC을 읽는 쪽이 아니라 폰이 그렇게 만든 것). 이 길로도 MAC을 공개하지 않는
+기기는 같은 Wi-Fi의 컴퓨터가 ARP 표를 읽어 주거나 공유기 관리 페이지의 접속 기기 목록을 보는 수밖에 없다.
 
 ### 기기 깨우기 (Wake-on-LAN)
 
@@ -326,3 +347,16 @@ swift test --package-path Core
 4. 스캔 중에 홈 화면으로 나갔다가 30초 안에 돌아오면 스캔이 이어져 끝나 있는지 본다(너무 오래 있으면 "중지됨").
 5. **설정 → 새 기기 알림** 켜기 → 알림 허용. 앱을 닫아 두면 몇 시간 안에 iOS가 깨워 확인한다(정확한 때는 iOS가 정한다).
    알림을 보려면 첫 스캔 기록이 있는 Wi-Fi에서, 그 뒤 처음 보는 기기가 들어와야 한다.
+
+### 추가 기능 3: 기기가 공개한 MAC 모으기
+
+1. 새 IPA를 설치하면 로컬 네트워크 권한 창이 다시 뜰 수 있다(찾는 Bonjour 종류가 늘어서). 허용한다.
+2. **다시 스캔**. 끝나면 버튼 아래에 "MAC을 아는 기기 N/M대"가 나온다. 이전보다 N이 늘었는지 본다.
+3. 기기 상세의 **MAC → 알게 된 곳**에서 출처를 본다.
+   - 프린터: "기기 SNMP(인터페이스 MAC)", "기기 ID(UUID)", "IPv6 주소(EUI-64)" 중 하나가 흔하다.
+   - 삼성 TV·Roku: "기기 정보 API"
+   - 시놀로지·QNAP NAS: "Bonjour 광고"(Time Machine을 켠 경우) 또는 "기기 SNMP"
+   - Hue 브리지: "기기 정보 API" 또는 "기기 ID(UUID)"
+   - 윈도우 PC: "NetBIOS 응답", 애플 TV·HomePod: "AirPlay 광고"
+4. **이름** 칸에 IPv6 주소가 보이는 기기가 있으면, `…ff:fe…`가 들어 있는 주소에서 MAC이 나왔는지 확인한다.
+5. 휴대폰은 여전히 MAC이 없거나 "무작위 주소"로 나오는 게 정상이다.

@@ -39,6 +39,10 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var macVendor: String?
     /// 탐색에는 답이 없었고 공유기 ARP 표(SNMP)에만 있는 기기(최근에 있었거나 모든 연결을 막는 기기)
     public var seenOnlyInRouterTable = false
+    /// 기기가 mDNS로 알려 준 IPv6 주소(EUI-64면 MAC이 들어 있다)
+    public var ipv6Addresses: [IPv6Address] = []
+    /// 기기가 스스로 공개했거나 기기에 물어 알아낸 MAC(출처별). 공유기·NetBIOS·AirPlay 말고 나머지 출처
+    public var reportedMACs: [MACSource: MACAddress] = [:]
 
     public init(
         address: IPv4,
@@ -69,12 +73,18 @@ public struct Device: Hashable, Sendable, Identifiable {
         upnp?.friendlyName.flatMap { ServiceBanner.isMeaningful($0) ? $0 : nil }
     }
 
-    /// 알게 된 MAC과 출처. 공유기 ARP 표 → NetBIOS → AirPlay 광고 순으로 믿는다
+    /// 알게 된 MAC과 출처. 공유기 ARP 표 → 이 기기 ARP 캐시 → 기기에 직접 물은 것(SNMP·API) → 기기가 광고한 것
+    /// (NetBIOS·AirPlay·Bonjour) → 기기 ID·IPv6에서 거꾸로 푼 것 순으로 믿는다
     public var mac: (address: MACAddress, source: MACSource)? {
-        if let routerMAC { return (routerMAC, .router) }
-        if let localARPMAC { return (localARPMAC, .localARP) }
-        if let netbiosMAC { return (netbiosMAC, .netbios) }
-        if let airplayMAC { return (airplayMAC, .airplay) }
+        let candidates: [(MACAddress?, MACSource)] = [
+            (routerMAC, .router), (localARPMAC, .localARP),
+            (reportedMACs[.deviceSNMP], .deviceSNMP), (reportedMACs[.deviceAPI], .deviceAPI),
+            (netbiosMAC, .netbios), (airplayMAC, .airplay), (reportedMACs[.bonjour], .bonjour),
+            (reportedMACs[.deviceID], .deviceID), (reportedMACs[.ipv6], .ipv6),
+        ]
+        for (address, source) in candidates {
+            if let address { return (address, source) }
+        }
         return nil
     }
 
@@ -171,6 +181,7 @@ public struct Device: Hashable, Sendable, Identifiable {
         deviceInfoModel = names.model ?? deviceInfoModel
         netbiosMAC = names.netbiosMAC ?? netbiosMAC
         upnp = names.upnp ?? upnp
+        if !names.ipv6.isEmpty { ipv6Addresses = names.ipv6 }
         names.services.forEach { merge($0) }
     }
 

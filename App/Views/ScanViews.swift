@@ -66,6 +66,10 @@ struct ScanControl: View {
         case .finished(let date, let duration):
             let took = duration.formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))
             var text = "기기 \(scan.devices.count)대 · \(took) 걸림 · \(date.formatted(date: .omitted, time: .shortened))"
+            let coverage = scan.macCoverage
+            if coverage.total > 0 {
+                text += "\nMAC을 아는 기기 \(coverage.known)/\(coverage.total)대"
+            }
             if let routerTable = scan.routerTableStatus {
                 text += "\n" + routerTable
             }
@@ -301,7 +305,9 @@ struct DeviceDetailView: View {
             } header: {
                 Text("종류 추정 근거")
             } footer: {
-                Text("iOS에서는 다른 기기의 MAC 주소(제조사)를 읽을 수 없어서 이름·서비스·열린 포트·배너로 짐작해요.")
+                Text(device.mac == nil
+                     ? "이 기기는 MAC을 스스로 공개하지 않아서 이름·서비스·열린 포트·배너로 짐작해요."
+                     : "MAC 제조사와 이름·서비스·열린 포트·배너로 짐작해요.")
             }
 
             Section {
@@ -309,6 +315,9 @@ struct DeviceDetailView: View {
                 LabeledContent("mDNS 호스트 이름", value: device.mdnsName ?? "없음")
                 LabeledContent("NetBIOS 이름", value: device.netbiosName ?? "없음")
                 LabeledContent("DNS 이름(공유기)", value: device.hostName ?? "없음")
+                if !device.ipv6Addresses.isEmpty {
+                    LabeledContent("IPv6", value: device.ipv6Addresses.map(\.description).joined(separator: "\n"))
+                }
             } header: {
                 Text("이름")
             } footer: {

@@ -1,13 +1,14 @@
 import Foundation
 
 /// DNS 메시지 만들기·읽기. 기기의 5353 포트에 직접 보내는 mDNS 질의(RFC 6762 §5.5, 6.7)에 쓴다.
-/// 필요한 레코드(A, PTR, TXT, SRV)만 풀고 나머지는 `.other`로 둔다.
+/// 필요한 레코드(A, AAAA, PTR, TXT, SRV)만 풀고 나머지는 `.other`로 둔다.
 public enum DNSMessage {
     public enum RecordType {
         public static let a: UInt16 = 1
         public static let ptr: UInt16 = 12
         public static let txt: UInt16 = 16
         public static let srv: UInt16 = 33
+        public static let aaaa: UInt16 = 28
     }
 
     /// 질문 여러 개를 담은 표준 질의(재귀 요청 없음).
@@ -56,6 +57,8 @@ public enum DNSMessage {
         switch type {
         case RecordType.a where length == 4:
             return .a(IPv4(bytes[start], bytes[start + 1], bytes[start + 2], bytes[start + 3]))
+        case RecordType.aaaa where length == 16:
+            return IPv6Address(Array(bytes[start..<end])).map { .aaaa($0) } ?? .other
         case RecordType.ptr:
             return readName(bytes, at: start).map { .ptr($0.0) } ?? .other
         case RecordType.srv where length >= 7:
@@ -125,6 +128,7 @@ public enum DNSMessage {
 public struct DNSRecord: Hashable, Sendable {
     public enum Data: Hashable, Sendable {
         case a(IPv4)
+        case aaaa(IPv6Address)
         case ptr(String)
         case txt([String: String])
         case srv(port: UInt16, target: String)

@@ -250,6 +250,13 @@ public struct DeviceClassifier: DeviceClassifying {
         if types.contains("_smb._tcp"), !types.contains("_companion-link._tcp") {
             evidence.add(.nas, 20, "파일 공유(SMB)")
         }
+        if types.contains("_adisk._tcp"), !types.contains("_companion-link._tcp") {
+            evidence.add(.nas, 40, "Time Machine 디스크")
+        }
+        if types.contains("_apple-mobdev2._tcp") {
+            evidence.add(.iPhone, 30, "iPhone·iPad Wi-Fi 동기화")
+            evidence.add(.tablet, 25, "iPhone·iPad Wi-Fi 동기화")
+        }
     }
 
     // MARK: 포트

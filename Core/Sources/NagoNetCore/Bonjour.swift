@@ -29,6 +29,12 @@ public struct BonjourService: Hashable, Sendable {
         case "_raop._tcp":
             // "MAC주소@이름"
             raw = name.split(separator: "@", maxSplits: 1).last.map(String.init) ?? name
+        case "_workstation._tcp":
+            // "diskstation [00:11:32:aa:bb:cc]"
+            raw = name.firstIndex(of: "[").map { String(name[..<$0]) } ?? name
+        case "_apple-mobdev2._tcp":
+            // "MAC@IPv6 주소"라서 이름이 아니다
+            return nil
         default:
             raw = name
         }
@@ -47,6 +53,8 @@ public enum BonjourCatalog {
     public static let serviceTypes = [
         "_airplay._tcp", "_raop._tcp", "_googlecast._tcp", "_ipp._tcp", "_printer._tcp", "_smb._tcp",
         "_ssh._tcp", "_http._tcp", "_hap._tcp", "_companion-link._tcp", "_spotify-connect._tcp",
+        // 이름보다 MAC이 든 광고(MACClues): Time Machine 디스크·리눅스 워크스테이션·Wi-Fi 동기화·Hue·ESPHome
+        "_adisk._tcp", "_workstation._tcp", "_apple-mobdev2._tcp", "_hue._tcp", "_esphomelib._tcp",
     ]
 
     static let titles: [String: String] = [
@@ -61,12 +69,18 @@ public enum BonjourCatalog {
         "_hap._tcp": "HomeKit",
         "_companion-link._tcp": "Apple 기기",
         "_spotify-connect._tcp": "Spotify Connect",
+        "_adisk._tcp": "Time Machine 디스크",
+        "_workstation._tcp": "워크스테이션",
+        "_apple-mobdev2._tcp": "Wi-Fi 동기화",
+        "_hue._tcp": "Philips Hue",
+        "_esphomelib._tcp": "ESPHome",
     ]
 
     /// 이름을 고를 때 믿는 순서: 사용자가 기기에 붙인 이름이 그대로 들어 있는 서비스 먼저
     static let namingOrder = [
         "_googlecast._tcp", "_companion-link._tcp", "_airplay._tcp", "_raop._tcp", "_hap._tcp",
-        "_ipp._tcp", "_printer._tcp", "_spotify-connect._tcp", "_smb._tcp", "_ssh._tcp", "_http._tcp",
+        "_ipp._tcp", "_printer._tcp", "_spotify-connect._tcp", "_hue._tcp", "_esphomelib._tcp", "_smb._tcp",
+        "_adisk._tcp", "_workstation._tcp", "_ssh._tcp", "_http._tcp", "_apple-mobdev2._tcp",
     ]
 
     /// 여러 서비스 중 기기 이름으로 쓸 것 하나
