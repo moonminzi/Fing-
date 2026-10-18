@@ -20,7 +20,10 @@ struct SystemNetworkInfo: NetworkInfoProviding {
         await withCheckedContinuation { (continuation: CheckedContinuation<(ssid: String?, bssid: MACAddress?), Never>) in
             NEHotspotNetwork.fetchCurrent { network in
                 let ssid = network?.ssid
-                let bssid = network?.bssid.flatMap { MACAddress($0) }
+                var bssid: MACAddress?
+                if let raw: String = network?.bssid {
+                    bssid = MACAddress(raw)
+                }
                 continuation.resume(returning: (ssid?.isEmpty == false ? ssid : nil, bssid))
             }
         }
