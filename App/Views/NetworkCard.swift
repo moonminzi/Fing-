@@ -46,6 +46,19 @@ struct NetworkCard: View {
                     label("서브넷")
                     Text("\(snapshot.subnet.mask.description) (/\(snapshot.subnet.prefixLength))")
                 }
+                if let bssid = snapshot.bssid {
+                    GridRow {
+                        label("접속 AP")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(bssid.description)
+                            if let vendor = VendorLookup.vendor(for: bssid) {
+                                Text(vendor)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
                 GridRow {
                     label("스캔 범위")
                     VStack(alignment: .leading, spacing: 2) {

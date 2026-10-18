@@ -9,12 +9,15 @@ public struct NetworkSnapshot: Hashable, Sendable {
     public var gateway: Gateway
     /// 네트워크 이름. 정확한 위치 권한이나 Wi-Fi 정보 권한(entitlement)이 없으면 nil
     public var ssid: String?
+    /// 접속한 AP의 MAC(BSSID). iOS가 유일하게 읽게 해 주는 남의 MAC이다(NEHotspotNetwork)
+    public var bssid: MACAddress?
 
-    public init(interfaceName: String, subnet: Subnet, gateway: Gateway, ssid: String? = nil) {
+    public init(interfaceName: String, subnet: Subnet, gateway: Gateway, ssid: String? = nil, bssid: MACAddress? = nil) {
         self.interfaceName = interfaceName
         self.subnet = subnet
         self.gateway = gateway
         self.ssid = ssid
+        self.bssid = bssid
     }
 
     public var myAddress: IPv4 { subnet.address }
