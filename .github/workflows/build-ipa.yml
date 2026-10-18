@@ -1,0 +1,68 @@
+name: Build NAGO NET IPA
+
+# NAGO NET(네트워크 스캐너) IPA를 빌드한다.
+on:
+  push:
+    paths:
+      - 'App/**'
+      - 'Core/**'
+      - 'project.yml'
+      - '.github/workflows/build-ipa.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nagonet-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode version
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # 엔진 시험(리눅스와 같은 시험 + 맥의 진짜 라우팅 테이블)
+      - name: Core tests
+        run: swift test --package-path Core
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          xcodegen
+
+      - name: Build (no signing)
+        run: |
+          xcodebuild -project NagoNet.xcodeproj -scheme NagoNet -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/NagoNet.app Payload/
+          # 재서명 도구가 권한(Wi-Fi 정보)을 그대로 가져가도록 entitlements를 박아 둔다(ad-hoc 서명)
+          codesign --force --sign - --entitlements App/NagoNet.entitlements Payload/NagoNet.app
+          codesign -d --entitlements - Payload/NagoNet.app
+          zip -qry NagoNet.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NagoNet-ipa
+          path: NagoNet.ipa
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="nagonet-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" NagoNet.ipa --target "$GITHUB_SHA" --prerelease \
+            --title "NAGO NET ${tag}" \
+            --notes "서명 안 된 IPA입니다(entitlements 포함 ad-hoc 서명). 본인 인증서로 재서명 후 설치하세요. 브랜치: ${GITHUB_REF_NAME}"

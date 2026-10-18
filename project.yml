@@ -1,0 +1,66 @@
+name: NagoNet
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  # IP 대역 계산·라우팅 테이블·스캔 조율(UI·Network 프레임워크 없음, 리눅스/맥에서 swift test)
+  NagoNetCore:
+    path: Core
+settings:
+  base:
+    DEVELOPMENT_TEAM: ""          # ← 본인 Team ID (developer.apple.com > Membership)
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+targets:
+  NagoNet:
+    type: application
+    platform: iOS
+    sources: [App]
+    scheme: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.nagonet   # ← 본인 것으로 변경
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+    dependencies:
+      - package: NagoNetCore
+    entitlements:
+      path: App/NagoNet.entitlements
+      properties:
+        # NEHotspotNetwork.fetchCurrent로 SSID 읽기
+        com.apple.developer.networking.wifi-info: true
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: NAGO NET
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        ITSAppUsesNonExemptEncryption: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: 같은 Wi-Fi에 연결된 기기를 찾고 열린 포트를 확인하는 데 로컬 네트워크를 사용해요.
+        # 앱이 찾는 Bonjour 서비스 전부(여기 없는 종류는 iOS가 검색을 막는다)
+        NSBonjourServices:
+          - _airplay._tcp
+          - _raop._tcp
+          - _googlecast._tcp
+          - _ipp._tcp
+          - _printer._tcp
+          - _smb._tcp
+          - _ssh._tcp
+          - _http._tcp
+          - _hap._tcp
+          - _companion-link._tcp
+          - _spotify-connect._tcp
+        # iOS는 SSID를 알려 줄 때 정확한 위치 권한을 요구한다(위치 자체는 읽지 않음)
+        NSLocationWhenInUseUsageDescription: 연결된 Wi-Fi 이름을 읽으려면 iOS가 위치 권한을 요구해요. 위치는 쓰거나 저장하지 않아요.
+        NSLocationTemporaryUsageDescriptionDictionary:
+          WiFiName: 연결된 Wi-Fi 이름을 읽으려면 iOS가 정확한 위치 권한을 요구해요.
