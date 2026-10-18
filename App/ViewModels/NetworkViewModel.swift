@@ -23,6 +23,10 @@ final class NetworkViewModel {
         self.info = info
     }
 
+    var snapshot: NetworkSnapshot? {
+        if case .connected(let snapshot) = phase { snapshot } else { nil }
+    }
+
     /// Wi-Fi 경로를 지켜보며 켜기·끄기·공유기 바뀜마다 다시 읽는다. 여러 번 불러도 한 번만 시작한다.
     func startMonitoring() {
         guard !isMonitoring else { return }

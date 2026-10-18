@@ -1,15 +1,17 @@
 import NagoNetCore
 import SwiftUI
 
-/// 메인 화면: 내 네트워크 카드(다음 단계에서 스캔 버튼·기기 목록이 아래에 붙는다).
+/// 메인 화면: 내 네트워크 카드, 큰 스캔 버튼과 진행률, 기기 목록.
 struct HomeView: View {
     let network: NetworkViewModel
+    @Bindable var scan: ScanViewModel
     let location: LocationPermission
+    @Binding var selection: IPv4?
 
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        List {
+        List(selection: $selection) {
             switch network.phase {
             case .loading:
                 Section {
@@ -42,6 +44,39 @@ struct HomeView: View {
                 }
                 .listRowBackground(Color.clear)
             }
+
+            if let snapshot = network.snapshot {
+                Section {
+                    ScanControl(scan: scan, network: snapshot)
+                }
+                if scan.status == .accessDenied {
+                    Section {
+                        LocalNetworkDeniedView()
+                    }
+                }
+            }
+
+            if !scan.devices.isEmpty {
+                Section {
+                    ForEach(scan.sortedDevices) { device in
+                        DeviceRow(device: device)
+                    }
+                } header: {
+                    HStack {
+                        Text("기기 \(scan.devices.count)대")
+                        Spacer()
+                        Picker("정렬", selection: $scan.sortOrder) {
+                            ForEach(DeviceSort.allCases) { order in
+                                Text(order.title).tag(order)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                        .font(.caption)
+                    }
+                    .textCase(nil)
+                }
+            }
         }
         .navigationTitle("NAGO NET")
         .refreshable { await network.refresh() }
@@ -63,8 +98,20 @@ struct HomeView: View {
         .onChange(of: location.state) {
             Task { await network.refresh() }
         }
+        // 다른 Wi-Fi로 옮기면 이전 결과를 지운다
+        .onChange(of: network.snapshot?.subnet) {
+            scan.networkChanged(to: network.snapshot)
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await network.refresh() } }
+            switch phase {
+            case .active:
+                Task { await network.refresh() }
+            case .background:
+                // 백그라운드에서는 스캔하지 않는다
+                scan.cancel()
+            default:
+                break
+            }
         }
     }
 }
