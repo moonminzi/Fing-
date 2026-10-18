@@ -83,24 +83,25 @@ private final class BrowseSession: @unchecked Sendable {
         }
         let connection = NWConnection(to: result.endpoint, using: Self.resolveParameters())
         resolving[key] = connection
+        // 주소가 풀리는 즉시 경로에 나타난다. 서비스 포트가 방화벽에 막혀 연결이 끝나지 않아도 주소는 얻는다
+        let resolved: @Sendable (NWPath?) -> Void = { [self] path in
+            if case .hostPort(let host, let port)? = path?.remoteEndpoint, case .ipv4(let address) = host {
+                finish(key, with: BonjourService(name: name, type: type, address: Self.ipv4(address), port: port.rawValue, txt: txt))
+            }
+        }
+        connection.pathUpdateHandler = { path in resolved(path) }
         connection.stateUpdateHandler = { [self] state in
             switch state {
             case .ready, .waiting, .failed:
-                // 연결이 됐든 거부됐든 주소는 이미 풀려 있다
-                if case .hostPort(let host, let port)? = connection.currentPath?.remoteEndpoint,
-                   case .ipv4(let address) = host {
-                    finish(key, with: BonjourService(
-                        name: name, type: type, address: Self.ipv4(address), port: port.rawValue, txt: txt
-                    ))
-                } else if case .ready = state {
-                    finish(key, with: nil)
-                }
+                resolved(connection.currentPath)
+                if case .ready = state { finish(key, with: nil) }
             default:
                 break
             }
         }
         connection.start(queue: queue)
         queue.asyncAfter(deadline: .now() + resolveTimeout.milliseconds / 1_000) { [self] in
+            resolved(connection.currentPath)
             finish(key, with: nil)
         }
     }

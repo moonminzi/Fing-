@@ -13,6 +13,10 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var services: [BonjourService] = []
     /// 역방향 DNS 이름(공유기가 알려 준 그대로)
     public var hostName: String?
+    /// 기기가 mDNS로 직접 알려 준 호스트 이름("Minjis-iPhone.local")
+    public var mdnsName: String?
+    /// NetBIOS 컴퓨터 이름(윈도우·삼바)
+    public var netbiosName: String?
 
     public init(
         address: IPv4,
@@ -30,7 +34,7 @@ public struct Device: Hashable, Sendable, Identifiable {
 
     public var id: IPv4 { address }
 
-    /// 사람이 읽을 이름. Bonjour 이름 → DNS 이름 → "공유기" 순. 모르면 nil(화면에는 IP를 쓴다)
+    /// 사람이 읽을 이름. Bonjour 이름 → 호스트 이름(mDNS → NetBIOS → DNS) → "공유기" 순. 모르면 nil(화면에는 IP)
     public var name: String? {
         if isSelf { return "이 기기" }
         return bonjourName ?? displayHostName ?? (isGateway ? "공유기" : nil)
@@ -41,9 +45,16 @@ public struct Device: Hashable, Sendable, Identifiable {
         BonjourCatalog.preferredName(among: services)
     }
 
-    /// 역방향 DNS 이름에서 꼬리(.lan 등)를 뗀 것
+    /// 호스트 이름에서 꼬리(.local, .lan 등)를 뗀 것. 기기가 직접 알려 준 이름을 공유기 DNS보다 먼저
     public var displayHostName: String? {
-        hostName.flatMap { HostName.display($0, for: address) }
+        [mdnsName, netbiosName, hostName].lazy
+            .compactMap { $0.flatMap { HostName.display($0, for: self.address) } }
+            .first
+    }
+
+    /// 아직 이름을 하나도 못 찾았는지(다시 스캔할 때 다시 묻는다)
+    public var needsNames: Bool {
+        !isSelf && services.isEmpty && mdnsName == nil && netbiosName == nil && hostName == nil
     }
 
     /// TCP에는 답하지 않고 Bonjour로만 찾은 기기
@@ -55,6 +66,14 @@ public struct Device: Hashable, Sendable, Identifiable {
     public mutating func merge(_ host: DiscoveredHost) {
         responseTime = responseTime.map { min($0, host.responseTime) } ?? host.responseTime
         openPorts = Array(Set(openPorts + host.openPorts)).sorted()
+    }
+
+    /// 이름 조회 결과를 합친다. 새로 못 찾은 것은 이전 값을 지킨다.
+    public mutating func merge(_ names: DeviceNames) {
+        hostName = names.dnsName ?? hostName
+        mdnsName = names.mdnsName ?? mdnsName
+        netbiosName = names.netbiosName ?? netbiosName
+        names.services.forEach { merge($0) }
     }
 
     /// Bonjour 서비스를 더한다. 같은 종류·이름이면 새 정보로 바꾼다.

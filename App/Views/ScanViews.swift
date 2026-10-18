@@ -204,9 +204,17 @@ struct DeviceDetailView: View {
                 }
             }
 
-            Section("이름") {
+            Section {
                 LabeledContent("Bonjour 이름", value: device.bonjourName ?? "없음")
-                LabeledContent("호스트 이름(DNS)", value: device.hostName ?? "없음")
+                LabeledContent("mDNS 호스트 이름", value: device.mdnsName ?? "없음")
+                LabeledContent("NetBIOS 이름", value: device.netbiosName ?? "없음")
+                LabeledContent("DNS 이름(공유기)", value: device.hostName ?? "없음")
+            } header: {
+                Text("이름")
+            } footer: {
+                if device.needsNames {
+                    Text("Bonjour 광고도, 직접 물어본 mDNS·NetBIOS 답도, 공유기 DNS 이름도 없는 기기예요. 안드로이드 폰이나 IoT 기기가 흔히 그래요.")
+                }
             }
 
             if !device.services.isEmpty {

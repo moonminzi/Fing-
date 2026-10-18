@@ -27,9 +27,12 @@ Core/                       NagoNetCore: UI·Network 프레임워크 없음 → 
   LocalNetworkAccess.swift  로컬 네트워크 권한 확인 프로토콜
   Bonjour.swift             Bonjour 서비스·이름 고르기·호스트 이름 다듬기, BonjourBrowsing·HostNameResolving 프로토콜
   ReverseDNS.swift          getnameinfo 역방향 DNS(시간 제한·취소)
+  DNSMessage.swift          DNS 메시지 만들기·읽기(압축 포인터), NetBIOS 이름 상태 질의
+  NameResolver.swift        기기별 이름 조회: 역방향 DNS + mDNS 유니캐스트 + NetBIOS
 App/                        NagoNet 앱
   Services/                 SystemNetworkInfo(SSID: NEHotspotNetwork), WiFiPathMonitor, LocationPermission,
-                            TCPProber(NWConnection), LocalNetworkAccess(권한 확인), BonjourBrowser(NWBrowser)
+                            TCPProber(NWConnection), LocalNetworkAccess(권한 확인), BonjourBrowser(NWBrowser),
+                            UDPExchange(NWConnection UDP)
   ViewModels/               @Observable 뷰모델
   Views/                    SwiftUI 화면
 ```
@@ -73,12 +76,18 @@ TCP 탐색과 함께 두 가지를 동시에 돌려 주소별로 합친다(`Scan
 
 - **Bonjour**: `NWBrowser`로 11종(`_airplay`, `_raop`, `_googlecast`, `_ipp`, `_printer`, `_smb`, `_ssh`, `_http`, `_hap`,
   `_companion-link`, `_spotify-connect`)을 TXT 레코드와 함께 찾는다. NWBrowser는 주소를 주지 않아서 서비스마다
-  NWConnection(IPv4만, Wi-Fi만)을 열어 시스템이 푼 주소(`currentPath.remoteEndpoint`)만 읽고 바로 끊는다.
+  NWConnection(IPv4만, Wi-Fi만)을 열어 시스템이 푼 주소(경로의 `remoteEndpoint`)만 읽고 바로 끊는다.
+  서비스 포트가 막혀 연결이 끝나지 않아도 주소가 풀리는 순간 경로에 나타나므로 그때 읽는다.
   TCP 탐색 포트에 답하지 않는 기기(방화벽 켠 맥 등)도 Bonjour로 찾으면 목록에 더한다("Bonjour" 표시).
   TCP 탐색이 끝난 뒤 늦게 오는 답을 2초 더 기다린다.
-- **역방향 DNS**: 목록에 새 주소가 들어올 때마다 `getnameinfo(NI_NAMEREQD)`로 PTR 이름을 묻는다(동시 8개, 3초 제한).
-  보통 공유기 DNS가 DHCP로 받은 기기 이름(`Galaxy-S23.lan` 같은)을 알려 준다.
-- **이름 고르는 순서**: Bonjour 이름 → DNS 이름 → (공유기면) "공유기" → IP.
+- **기기별 이름 조회**: 목록에 새 주소가 들어올 때마다 세 가지를 함께 묻는다(기기 8대씩, `NameResolver`).
+  - **mDNS 유니캐스트**: 기기의 UDP 5353으로 직접 DNS 질의를 보낸다. 회사·아파트·관리형 AP처럼 기기끼리의
+    멀티캐스트(Bonjour 광고)를 막아 둔 Wi-Fi에서도 애플 기기·리눅스·프린터는 직접 온 질의에 답한다(RFC 6762 §5.5).
+    역방향 PTR로 호스트 이름(`Minjis-iPhone.local`), 서비스 종류별 PTR로 Bonjour 이름을 얻는다(1.5초 제한).
+    멀티캐스트가 아니라서 multicast entitlement가 필요 없다.
+  - **NetBIOS 이름 상태**(UDP 137): 윈도우 PC·삼바 NAS의 컴퓨터 이름(`MINJI-PC`).
+  - **역방향 DNS**: `getnameinfo(NI_NAMEREQD)`로 공유기 DNS의 PTR 이름(`Galaxy-S23.lan`, 2초 제한).
+- **이름 고르는 순서**: Bonjour 이름 → 호스트 이름(mDNS → NetBIOS → DNS) → (공유기면) "공유기" → IP.
   - Bonjour는 사용자가 붙인 이름이 그대로 든 서비스 먼저: Google Cast(TXT의 `fn`) → Apple 기기(companion-link) →
     AirPlay → AirPlay 오디오(`MAC@이름`에서 이름만) → HomeKit → 프린터 → Spotify → SMB → SSH → 웹
   - DNS 이름은 `.lan`·`.local` 같은 꼬리를 떼고, `192-168-0-7`처럼 IP를 그대로 쓴 이름은 버린다.
@@ -156,8 +165,10 @@ swift test --package-path Core
 2. 애플 기기·TV·스피커·프린터는 **사용자가 붙인 이름**("민지의 iPhone", "거실 Apple TV", "HP LaserJet …")으로,
    나머지는 공유기가 아는 **호스트 이름**("Galaxy-S23" 같은)으로 바뀌는지 본다.
    - 아래 줄에 IP와 찾은 서비스(Apple 기기 · AirPlay …)가 나온다.
-   - 이름이 안 붙는 기기는 Bonjour 광고도 없고 공유기 DNS에도 이름이 없는 기기다(정상).
-3. 기기를 누르면 상세에 **Bonjour 이름 / 호스트 이름(DNS)**과 **Bonjour 서비스 목록**(종류, 인스턴스 이름, 포트, 모델)이 나온다.
+   - 기기끼리 멀티캐스트를 막은 Wi-Fi에서도 애플 기기·윈도우 PC·리눅스·프린터는 직접 질의(mDNS·NetBIOS)로 이름이 붙는다.
+   - 이름이 안 붙는 기기는 어떤 방법에도 답하지 않는 기기다(안드로이드 폰, IoT 기기, 관리형 AP 등에서 흔함).
+3. 기기를 누르면 상세에 **Bonjour 이름 / mDNS 호스트 이름 / NetBIOS 이름 / DNS 이름**과
+   **Bonjour 서비스 목록**(종류, 인스턴스 이름, 포트, 모델)이 나와 어디서 이름을 얻었는지 보인다.
 4. 2단계에서 빠졌던 기기(방화벽을 켠 맥 등)가 오른쪽에 "Bonjour"라고 표시되며 새로 잡히는지 본다.
 5. **이름순** 정렬로 바꾸면 이름 있는 기기가 가나다순으로 먼저, 이름 없는 기기는 뒤에 IP순으로 나온다.
 6. VPN을 켠 채로도 이름이 똑같이 나오는지 본다(Bonjour 검색과 주소 풀기도 Wi-Fi로 고정).

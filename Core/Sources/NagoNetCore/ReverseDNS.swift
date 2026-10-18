@@ -56,14 +56,16 @@ public struct ReverseDNSResolver: HostNameResolving {
 }
 
 /// 여러 곳(답·시간 제한·취소) 중 먼저 온 값 하나로 continuation을 딱 한 번 이어 준다.
-final class OneShot<Value: Sendable>: @unchecked Sendable {
+public final class OneShot<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Value, Never>?
     private var early: Value?
     private var isDone = false
 
+    public init() {}
+
     /// 기다리기 시작한다. 이미 값이 왔으면(취소가 먼저 왔으면) 바로 이어 준다.
-    func wait(with continuation: CheckedContinuation<Value, Never>) {
+    public func wait(with continuation: CheckedContinuation<Value, Never>) {
         lock.lock()
         if isDone, let early {
             self.early = nil
@@ -75,7 +77,7 @@ final class OneShot<Value: Sendable>: @unchecked Sendable {
         lock.unlock()
     }
 
-    func resume(_ value: Value) {
+    public func resume(_ value: Value) {
         lock.lock()
         guard !isDone else {
             lock.unlock()

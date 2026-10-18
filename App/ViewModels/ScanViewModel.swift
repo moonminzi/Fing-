@@ -4,7 +4,8 @@ import Observation
 
 /// 스캔 버튼·진행률·기기 목록.
 ///
-/// 스캔 한 번 = TCP 탐색(ScannerService) + Bonjour 검색 + 역방향 DNS를 함께 돌려 주소별로 합친다.
+/// 스캔 한 번 = TCP 탐색(ScannerService) + Bonjour 검색 + 기기별 이름 조회(역방향 DNS·mDNS 유니캐스트·NetBIOS)를
+/// 함께 돌려 주소별로 합친다.
 @MainActor @Observable
 final class ScanViewModel {
     enum Status: Equatable {
@@ -20,7 +21,7 @@ final class ScanViewModel {
 
     /// TCP 탐색이 끝난 뒤 늦게 오는 Bonjour 답을 더 기다리는 시간
     static let bonjourGrace: Duration = .seconds(2)
-    /// 역방향 DNS 동시 조회 수
+    /// 이름 조회를 동시에 돌리는 기기 수(기기마다 DNS·mDNS 2개·NetBIOS를 함께 묻는다)
     static let maxConcurrentLookups = 8
 
     private(set) var status: Status = .idle
@@ -33,22 +34,22 @@ final class ScanViewModel {
 
     @ObservationIgnored private let scanner: any NetworkScanning
     @ObservationIgnored private let bonjour: any BonjourBrowsing
-    @ObservationIgnored private let hostNames: any HostNameResolving
+    @ObservationIgnored private let naming: any DeviceNaming
     @ObservationIgnored private let access: any LocalNetworkAccessChecking
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var scannedSubnet: Subnet?
-    /// 새 주소가 목록에 들어올 때마다 역방향 DNS 조회로 넘긴다
+    /// 새 주소가 목록에 들어올 때마다 이름 조회로 넘긴다
     @ObservationIgnored private var lookupQueue: AsyncStream<IPv4>.Continuation?
 
     init(
         scanner: any NetworkScanning = ScannerService(prober: TCPProber()),
         bonjour: any BonjourBrowsing = BonjourBrowser(),
-        hostNames: any HostNameResolving = ReverseDNSResolver(),
+        naming: any DeviceNaming = NameResolver(dns: ReverseDNSResolver(timeout: .seconds(2)), transport: UDPExchange()),
         access: any LocalNetworkAccessChecking = LocalNetworkAccess()
     ) {
         self.scanner = scanner
         self.bonjour = bonjour
-        self.hostNames = hostNames
+        self.naming = naming
         self.access = access
     }
 
@@ -110,7 +111,7 @@ final class ScanViewModel {
         scannedSubnet = nil
     }
 
-    /// TCP 탐색·Bonjour·역방향 DNS를 함께 돌린다. 로컬 네트워크 권한이 막혀 멈췄으면 true.
+    /// TCP 탐색·Bonjour·이름 조회를 함께 돌린다. 로컬 네트워크 권한이 막혀 멈췄으면 true.
     private func discover(on network: NetworkSnapshot) async -> Bool {
         progress = 0
         isNaming = false
@@ -119,13 +120,13 @@ final class ScanViewModel {
         let (lookups, lookupQueue) = AsyncStream.makeStream(of: IPv4.self)
         self.lookupQueue = lookupQueue
         // 이미 목록에 있는데 이름이 없는 기기(다시 스캔)도 조회
-        for device in devices.values where device.hostName == nil && !device.isSelf {
+        for device in devices.values where device.needsNames {
             lookupQueue.yield(device.address)
         }
 
         var denied = false
         await withTaskGroup(of: Void.self) { names in
-            names.addTask { await self.resolveHostNames(lookups) }
+            names.addTask { await self.resolveNames(lookups) }
 
             await withTaskGroup(of: Void.self) { browsing in
                 browsing.addTask { await self.browseBonjour(on: network) }
@@ -147,7 +148,7 @@ final class ScanViewModel {
                 }
                 browsing.cancelAll()
             }
-            // 새 주소가 더 안 들어오니 남은 DNS 조회만 끝내면 된다
+            // 새 주소가 더 안 들어오니 남은 이름 조회만 끝내면 된다
             lookupQueue.finish()
             self.lookupQueue = nil
         }
@@ -162,27 +163,22 @@ final class ScanViewModel {
         }
     }
 
-    private func resolveHostNames(_ addresses: AsyncStream<IPv4>) async {
-        let hostNames = self.hostNames
-        await withTaskGroup(of: (IPv4, String?).self) { group in
+    private func resolveNames(_ addresses: AsyncStream<IPv4>) async {
+        let naming = self.naming
+        await withTaskGroup(of: (IPv4, DeviceNames).self) { group in
             var running = 0
             for await address in addresses {
-                if running >= Self.maxConcurrentLookups, case let (done, name)? = await group.next() {
-                    apply(hostName: name, to: done)
+                if running >= Self.maxConcurrentLookups, case let (done, names)? = await group.next() {
+                    devices[done]?.merge(names)
                     running -= 1
                 }
-                group.addTask { (address, await hostNames.hostName(for: address)) }
+                group.addTask { (address, await naming.names(for: address)) }
                 running += 1
             }
-            for await (done, name) in group {
-                apply(hostName: name, to: done)
+            for await (done, names) in group {
+                devices[done]?.merge(names)
             }
         }
-    }
-
-    private func apply(hostName: String?, to address: IPv4) {
-        guard let hostName else { return }
-        devices[address]?.hostName = hostName
     }
 
     /// 주소의 기기를 고치고, 처음 보는 주소면 새로 넣으며 DNS 조회를 건다.
