@@ -431,28 +431,42 @@ final class ScanViewModel {
     /// 이 기기 자신의 ARP 캐시를 읽어 MAC을 채운다. 스캔하며 연결한 기기의 MAC이 여기 담겨 있다.
     /// 더불어 iOS가 그 MAC을 흘려주는지(진짜 MAC)·가리는지(02:00:…)를 그대로 세어 진단 한 줄로 남긴다.
     private func applyLocalARP(on network: NetworkSnapshot) {
-        let report = arpCache.readReport()
-        for (address, mac) in report.usable where devices[address] != nil {
+        let arp = arpCache.readReport()
+        for (address, mac) in arp.usable where devices[address] != nil {
             if devices[address]?.localARPMAC != mac {
                 devices[address]?.localARPMAC = mac
                 refresh(address)
             }
         }
-        localARPStatus = Self.localARPMessage(report)
+        // IPv6 이웃(NDP) 캐시도 새는지 본다. 새면, 그 IPv6를 광고한 기기에 MAC을 붙인다(공유기 없이 얻은 진짜 MAC).
+        let ndp = arpCache.readNDPReport()
+        for (ip6, mac) in ndp.usable {
+            guard let address = devices.first(where: { $0.value.ipv6Addresses.contains(ip6) })?.key else { continue }
+            if devices[address]?.localARPMAC != mac {
+                devices[address]?.localARPMAC = mac
+                refresh(address)
+            }
+        }
+        localARPStatus = Self.localARPMessage(arp: arp, ndp: ndp)
     }
 
-    /// ARP 캐시 진단을 사람이 읽을 한 줄로. iOS가 MAC을 주는지/가리는지 추측 없이 측정값 그대로 알린다.
-    static func localARPMessage(_ report: ARPCacheReport) -> String? {
-        if report.usableCount > 0 {
-            let hidden = report.hiddenCount > 0 ? ", 가린 것 \(report.hiddenCount)개" : ""
-            return "이 기기 ARP 캐시에서 MAC \(report.usableCount)개를 직접 읽었어요"
-                + "(항목 \(report.entries)개 중\(hidden)) — iOS가 MAC을 흘리는 기기예요."
+    /// ARP·NDP 캐시 진단을 사람이 읽을 줄로. iOS가 MAC을 주는지/가리는지 추측 없이 측정값 그대로 알린다.
+    static func localARPMessage(arp: ARPCacheReport, ndp: NDPReport) -> String? {
+        var lines: [String] = []
+        if arp.usableCount > 0 {
+            lines.append("ARP(IPv4)에서 MAC \(arp.usableCount)개를 직접 읽었어요(항목 \(arp.entries)개). iOS가 흘리는 기기예요!")
+        } else if arp.hiddenCount > 0 {
+            lines.append("iOS가 ARP 항목 \(arp.hiddenCount)개를 주지만 MAC은 전부 02:00:…으로 가렸어요.")
         }
-        if report.hiddenCount > 0 {
-            return "iOS가 ARP 항목 \(report.hiddenCount)개를 주지만 MAC은 전부 02:00:…으로 가렸어요. "
-                + "이 기기에선 다른 기기 MAC을 공유기 SNMP로만 얻을 수 있어요."
+        if ndp.usableCount > 0 {
+            lines.append("IPv6 이웃(NDP) 캐시에선 MAC \(ndp.usableCount)개가 새어나왔어요! 공유기 없이 얻은 진짜 MAC이에요.")
+        } else if ndp.hiddenCount > 0 {
+            lines.append("IPv6 이웃(NDP) 항목 \(ndp.hiddenCount)개도 MAC은 가려져 있어요.")
         }
-        return nil
+        if arp.usableCount == 0, ndp.usableCount == 0, !lines.isEmpty {
+            lines.append("→ 이 기기에선 다른 기기 MAC을 공유기 SNMP로만 얻을 수 있어요.")
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     /// 공유기(다음으로 관리형 AP 몇 대)에 SNMP로 ARP 표를 물어 MAC을 채운다. 탐색엔 안 잡혔지만

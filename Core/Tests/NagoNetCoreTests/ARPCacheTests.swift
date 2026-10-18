@@ -7,6 +7,9 @@ struct ARPCacheTests {
     /// sockaddr_in(16바이트): len, AF_INET(2), port(2), IP(4), 0×8
     private func inet(_ ip: IPv4) -> [UInt8] { [16, 2, 0, 0] + ip.octets + [UInt8](repeating: 0, count: 8) }
 
+    /// sockaddr_in6(28바이트): len, AF_INET6(30), port(2), flow(4), addr(16)@8, scope(4)
+    private func inet6(_ addr: [UInt8]) -> [UInt8] { [28, 30, 0, 0, 0, 0, 0, 0] + addr + [0, 0, 0, 0] }
+
     /// sockaddr_dl: len, AF_LINK(18), index(2), type, nlen, alen, slen, data(name + mac). 이름 없이 MAC만.
     private func link(_ mac: [UInt8], name: [UInt8] = [], alen: UInt8 = 6) -> [UInt8] {
         let data = name + mac
@@ -77,6 +80,24 @@ struct ARPCacheTests {
     @Test func reportIsEmptyForEmptyCache() {
         #expect(ARPCache.report([]) == .empty)
         #expect(ARPCache.report([]).entries == 0)
+    }
+
+    @Test func ndpReportSeparatesRealFromHiddenV6MACs() {
+        let real: [UInt8] = [0x3C, 0x7C, 0x3F, 1, 2, 3]
+        let v6a: [UInt8] = [0xFE, 0x80] + [UInt8](repeating: 0, count: 13) + [1]
+        let v6b: [UInt8] = [0xFE, 0x80] + [UInt8](repeating: 0, count: 13) + [2]
+        let bytes = message([0: inet6(v6a), 1: link(real)])
+            + message([0: inet6(v6b), 1: link([0, 0, 0, 0, 0, 0])])   // iOS가 가린 경우
+        let report = ARPCache.reportNDP(bytes)
+        #expect(report.entries == 2)
+        #expect(report.usableCount == 1)
+        #expect(report.hiddenCount == 1)
+        #expect(report.usable[IPv6Address(v6a)!] == MACAddress(real))
+        #expect(report.hidden == [IPv6Address(v6b)!])
+    }
+
+    @Test func ndpReportIsEmptyForEmptyCache() {
+        #expect(ARPCache.reportNDP([]) == .empty)
     }
 
     @Test func deviceLearnsMACFromLocalARP() {
