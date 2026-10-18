@@ -66,7 +66,7 @@ private final class StreamRead: @unchecked Sendable {
     private static let maxBytes = 128 * 1024
 
     private let request: [UInt8]?
-    private let stop: Stop
+    private let stopRule: Stop
     private let result = OneShot<Output>()
     private let lock = NSLock()
     private var output = Output()
@@ -74,7 +74,7 @@ private final class StreamRead: @unchecked Sendable {
 
     init(host: IPv4, port: UInt16, tls: Bool, request: [UInt8]?, stop: Stop) {
         self.request = request
-        self.stop = stop
+        self.stopRule = stop
         connection = NWConnection(
             host: .ipv4(IPv4Address(host.description)!),
             port: NWEndpoint.Port(rawValue: port)!,
@@ -140,7 +140,7 @@ private final class StreamRead: @unchecked Sendable {
             let isDone = lock.withLock {
                 if let data { output.bytes += data }
                 if isComplete || error != nil || output.bytes.count >= Self.maxBytes { return true }
-                switch stop {
+                switch stopRule {
                 case .lineEnd:
                     return output.bytes.contains(0x0A)
                 case .titleEnd:
