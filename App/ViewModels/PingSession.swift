@@ -34,7 +34,7 @@ final class PingSession {
                 samples.append(Sample(sequence: sequence, time: time))
                 // 다음 핑까지 1초 간격(답이 늦게 왔으면 그만큼 덜 기다린다)
                 let rest = Duration.seconds(1) - started.duration(to: .now)
-                if sequence < Self.count, rest > .zero {
+                if rest > .zero, sequence < Self.count {
                     try? await Task.sleep(for: rest)
                 }
             }
