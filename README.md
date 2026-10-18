@@ -13,6 +13,7 @@ Swift 6 · SwiftUI · Swift Concurrency · Network 프레임워크 · SwiftData,
 | 4 | 기기 종류 추정, 상세 화면, 포트 100개 스캔, 별명 | ✅ |
 | 5 | SwiftData로 네트워크별 기록, "새 기기" 배지 | ✅ |
 | + | 네트워크 레이더, 핑(ICMP) 도구·핑으로 찾기, 웹 관리 페이지 열기, CSV 내보내기, 앱 아이콘 | ✅ |
+| + | SSDP 유니캐스트(UPnP), MAC 주소·제조사(NetBIOS·AirPlay·공유기 SNMP), 백그라운드 마무리·새 기기 알림 | ✅ |
 
 ## 구조
 
@@ -37,6 +38,9 @@ Core/                       NagoNetCore: UI·Network 프레임워크 없음 → 
   History.swift             NetworkIdentity, DeviceMatcher(같은 기기 찾기), NetworkBaseline("새 기기"),
                             ScanHistoryStoring 프로토콜
   ICMP.swift                SOCK_DGRAM ICMP 핑(Pinging 프로토콜), 에코 메시지·체크섬, 핑 통계
+  MAC.swift                 MAC 주소(무작위 주소 판별), OUI 제조사 표
+  SSDP.swift                SSDP 유니캐스트 검색·UPnP 설명 XML 해석, HTTPFetching 프로토콜
+  SNMP.swift                SNMPv2c(BER) GetBulk, 공유기 ARP 표 읽기(ARPTableReader)
   Export.swift              CSV 내보내기, 레이더 배치(RadarLayout)
 App/                        NagoNet 앱
   Services/                 SystemNetworkInfo(SSID: NEHotspotNetwork), WiFiPathMonitor, LocationPermission,
@@ -172,12 +176,19 @@ iPad는 기기를 고르지 않았을 때 오른쪽 칸 전체가, iPhone은 툴
 - 툴바의 공유 버튼으로 지금 목록을 **CSV**로 보낸다(IP·이름·별명·종류·응답 시간·열린 포트·Bonjour 이름·
   호스트 이름·모델·새 기기, 엑셀에서 한글이 깨지지 않게 BOM)
 
-## iOS에서 하지 않는 것
+### iOS 제약을 돌아가는 방법
 
-- 다른 기기의 MAC 주소·ARP 테이블 읽기(iOS에서 막혀 있음)
-- raw 소켓 ICMP(필요하면 SOCK_DGRAM ICMP만)
-- SSDP/UPnP 같은 멀티캐스트(별도 entitlement 필요)
-- 백그라운드 스캔
+처음엔 아래 넷을 하지 않기로 했지만, 막힌 것만 피하고 할 수 있는 길로 더했다.
+
+| 막힌 것 | 이 앱이 하는 것 |
+| --- | --- |
+| 다른 기기의 MAC·ARP 표 읽기(iOS 11부터 막힘) | ① 기기가 스스로 알려 준 MAC: NetBIOS 답의 unit ID(윈도우), AirPlay TXT `deviceid`·AirPlay 오디오 이름 앞자리(애플 TV·스피커) ② **공유기·AP에 SNMP로 ARP 표를 묻기**(UDP 161, 설정의 커뮤니티 문자열, 기본 public). 게이트웨이 → 관리형 AP 순으로 묻고, 탐색엔 안 잡혔지만 공유기가 최근에 본 기기도 "공유기 기록에만 있음"으로 더한다. MAC 앞자리로 IEEE 등록 목록(`App/Resources/oui.txt`, 약 4만 개)에서 제조사를 찾는다. 무작위 주소(비공개 Wi-Fi 주소)는 제조사가 없고 "휴대기기"의 단서로만 쓴다. 진짜 MAC은 같은 기기 찾기의 가장 강한 열쇠가 된다 |
+| raw 소켓 ICMP | 그대로 안 씀(root 필요). 핑은 SOCK_DGRAM ICMP로 한다 |
+| SSDP/UPnP 멀티캐스트(entitlement 필요) | **유니캐스트 SSDP**(UPnP 1.1): 기기 주소의 1900 포트로 직접 `M-SEARCH`를 보내고, 답의 LOCATION(그 기기 주소일 때만)에서 설명 XML을 읽어 이름(friendlyName)·제조사·모델·기기 종류를 얻는다. 멀티캐스트가 아니라 entitlement가 필요 없다 |
+| 백그라운드 상시 스캔 | ① 스캔 중에 앱을 나가면 iOS가 주는 약 30초 동안 마저 스캔(`beginBackgroundTask`), 시간이 다 되면 멈춤 ② 설정의 **새 기기 알림**을 켜면 `BGAppRefreshTask`로 iOS가 가끔(보통 몇 시간에 한 번) 깨워 줄 때 포트 하나로 빠르게 훑고, 기록에 없는 주소만 이름을 물어 다시 확인한 뒤 처음 보는 기기를 알림. 한 번 알린 기기는 다음 앱 스캔이 기록될 때까지 다시 알리지 않는다. 실시간 감시는 iOS에서 할 수 없다 |
+
+멀티캐스트 entitlement(`com.apple.developer.networking.multicast`)는 유료 개발자 계정으로 Apple에 신청해 승인받으면 쓸 수 있다.
+승인받으면 SSDP·mDNS를 멀티캐스트로도 보낼 수 있지만, 지금 방식만으로도 대부분의 기기는 답한다.
 
 ## 빌드
 
@@ -289,3 +300,15 @@ swift test --package-path Core
 5. 목록에서 "핑에만 응답"이 붙은 기기가 생겼는지 본다(전에는 안 보이던 기기).
 6. Aruba AP 상세 → **웹 관리 페이지** 링크를 누르면 사파리로 열린다.
 7. 스캔이 끝난 뒤 툴바의 공유 버튼 → 파일에 저장하거나 메일로 보내서 CSV가 엑셀·넘버스에서 열리는지 본다.
+
+### 추가 기능 2: SSDP·MAC·SNMP·백그라운드
+
+1. **다시 스캔**. 끝나면 버튼 아래에 "공유기 ARP 표(SNMP, …)에서 MAC N개를 읽었어요" 또는 "SNMP 응답이 없어…"가 나온다.
+   - SNMP가 되면: 거의 모든 기기 상세에 **MAC·제조사**가 생기고, 탐색엔 없던 기기가 "공유기 기록에만 있음"으로 더해진다.
+     휴대폰은 대부분 "무작위 주소"로 나오는 게 정상(비공개 Wi-Fi 주소).
+   - 안 되면: 툴바 … → **설정**에서 커뮤니티 문자열을 학교 네트워크 관리자에게 받아 넣는다.
+2. 윈도우 PC 상세에 **MAC(NetBIOS 응답)**과 제조사(Intel·Dell…), 애플 TV·에어플레이 스피커에 **MAC(AirPlay 광고)**가 나오는지 본다.
+3. 스마트 TV·공유기·NAS·소노스가 있으면 상세에 **UPnP(SSDP)** 칸(이름·제조사·모델)이 생기고 이름이 "[TV] Samsung …"처럼 바뀌는지 본다.
+4. 스캔 중에 홈 화면으로 나갔다가 30초 안에 돌아오면 스캔이 이어져 끝나 있는지 본다(너무 오래 있으면 "중지됨").
+5. **설정 → 새 기기 알림** 켜기 → 알림 허용. 앱을 닫아 두면 몇 시간 안에 iOS가 깨워 확인한다(정확한 때는 iOS가 정한다).
+   알림을 보려면 첫 스캔 기록이 있는 Wi-Fi에서, 그 뒤 처음 보는 기기가 들어와야 한다.

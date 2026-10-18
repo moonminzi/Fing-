@@ -65,3 +65,8 @@ targets:
         NSLocationWhenInUseUsageDescription: 연결된 Wi-Fi 이름을 읽으려면 iOS가 위치 권한을 요구해요. 위치는 쓰거나 저장하지 않아요.
         NSLocationTemporaryUsageDescriptionDictionary:
           WiFiName: 연결된 Wi-Fi 이름을 읽으려면 iOS가 정확한 위치 권한을 요구해요.
+        # 설정의 "새 기기 알림": iOS가 가끔 깨워 주는 짧은 확인(BGAppRefreshTask)
+        UIBackgroundModes:
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.nagonet.refresh

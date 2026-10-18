@@ -27,6 +27,16 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var scannedPorts: [UInt16]?
     /// TCP에는 답이 없고 핑(ICMP)에만 답한 기기
     public var isPingOnly = false
+    /// SSDP 유니캐스트로 읽은 UPnP 기기 설명
+    public var upnp: UPnPDevice?
+    /// 공유기 ARP 표(SNMP)에서 읽은 MAC
+    public var routerMAC: MACAddress?
+    /// NetBIOS 답에 든 MAC
+    public var netbiosMAC: MACAddress?
+    /// MAC 앞자리로 찾은 제조사(앱이 OUI 표로 채운다)
+    public var macVendor: String?
+    /// 탐색에는 답이 없었고 공유기 ARP 표(SNMP)에만 있는 기기(최근에 있었거나 모든 연결을 막는 기기)
+    public var seenOnlyInRouterTable = false
 
     public init(
         address: IPv4,
@@ -49,12 +59,35 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var name: String? {
         if let alias { return alias }
         if isSelf { return "이 기기" }
-        return bonjourName ?? displayHostName ?? productName ?? vendorName ?? (isGateway ? "공유기" : nil)
+        return bonjourName ?? upnpName ?? displayHostName ?? productName ?? vendorName ?? (isGateway ? "공유기" : nil)
     }
 
-    /// 배너에서 찾은 제조사 + 종류("Aruba AP", "Synology NAS", "HP 프린터")
+    /// UPnP 설명의 사용자가 붙인 이름("[TV] Samsung 7 Series (55)")
+    public var upnpName: String? {
+        upnp?.friendlyName.flatMap { ServiceBanner.isMeaningful($0) ? $0 : nil }
+    }
+
+    /// 알게 된 MAC과 출처. 공유기 ARP 표 → NetBIOS → AirPlay 광고 순으로 믿는다
+    public var mac: (address: MACAddress, source: MACSource)? {
+        if let routerMAC { return (routerMAC, .router) }
+        if let netbiosMAC { return (netbiosMAC, .netbios) }
+        if let airplayMAC { return (airplayMAC, .airplay) }
+        return nil
+    }
+
+    /// AirPlay TXT의 deviceid, 또는 AirPlay 오디오 이름 앞의 "AABBCCDDEEFF@"
+    public var airplayMAC: MACAddress? {
+        for service in services {
+            if service.type == "_airplay._tcp", let id = service.txt["deviceid"], let mac = MACAddress(id) { return mac }
+            if service.type == "_raop._tcp", let at = service.name.firstIndex(of: "@"),
+               let mac = MACAddress(service.name[..<at]) { return mac }
+        }
+        return nil
+    }
+
+    /// 배너·UPnP·MAC에서 찾은 제조사 + 종류("Aruba AP", "Synology NAS", "HP 프린터", "Apple iPhone")
     public var vendorName: String? {
-        guard let vendor = banners.lazy.compactMap(\.vendor).first else { return nil }
+        guard let vendor = banners.lazy.compactMap(\.vendor).first ?? upnp?.manufacturer ?? macVendor else { return nil }
         if isGateway { return "\(vendor) 공유기" }
         switch kind {
         case .router: return "\(vendor) AP"
@@ -87,7 +120,7 @@ public struct Device: Hashable, Sendable, Identifiable {
         banners.lazy.compactMap(\.productName).first
     }
 
-    /// 모델 식별자: `_device-info` → 서비스 TXT(model·rpMd·am·md·ty)
+    /// 모델 식별자: `_device-info` → 서비스 TXT(model·rpMd·am·md·ty) → UPnP 제조사·모델
     public var model: String? {
         if let deviceInfoModel { return deviceInfoModel }
         for key in ["model", "rpmd", "am", "md", "ty"] {
@@ -95,7 +128,7 @@ public struct Device: Hashable, Sendable, Identifiable {
                 return value
             }
         }
-        return nil
+        return upnp?.model
     }
 
     /// 탐색 포트 + 포트 스캔에서 찾은 열린 포트
@@ -111,7 +144,7 @@ public struct Device: Hashable, Sendable, Identifiable {
 
     /// 아직 이름을 하나도 못 찾았는지(다시 스캔할 때 다시 묻는다)
     public var needsNames: Bool {
-        !isSelf && services.isEmpty && mdnsName == nil && netbiosName == nil && hostName == nil
+        !isSelf && services.isEmpty && mdnsName == nil && netbiosName == nil && hostName == nil && upnp == nil
     }
 
     /// TCP에는 답하지 않고 Bonjour로만 찾은 기기
@@ -121,6 +154,7 @@ public struct Device: Hashable, Sendable, Identifiable {
 
     /// 탐색 결과를 합친다(같은 주소가 여러 번 온다).
     public mutating func merge(_ host: DiscoveredHost) {
+        seenOnlyInRouterTable = false
         isPingOnly = host.viaPingOnly && (responseTime == nil || isPingOnly)
         responseTime = responseTime.map { min($0, host.responseTime) } ?? host.responseTime
         openPorts = Array(Set(openPorts + host.openPorts)).sorted()
@@ -132,6 +166,8 @@ public struct Device: Hashable, Sendable, Identifiable {
         mdnsName = names.mdnsName ?? mdnsName
         netbiosName = names.netbiosName ?? netbiosName
         deviceInfoModel = names.model ?? deviceInfoModel
+        netbiosMAC = names.netbiosMAC ?? netbiosMAC
+        upnp = names.upnp ?? upnp
         names.services.forEach { merge($0) }
     }
 
@@ -204,16 +240,20 @@ public struct DeviceIdentity: Hashable, Sendable, Codable {
     public let address: IPv4
     public let hostName: String?
     public let bonjourName: String?
+    /// 알면 가장 믿을 만한 열쇠(무작위 주소는 넣지 않는다: Wi-Fi마다 바뀔 수 있다)
+    public let mac: MACAddress?
 
-    public init(address: IPv4, hostName: String?, bonjourName: String?) {
+    public init(address: IPv4, hostName: String?, bonjourName: String?, mac: MACAddress? = nil) {
         self.address = address
         self.hostName = hostName
         self.bonjourName = bonjourName
+        self.mac = mac
     }
 
     /// 믿을 만한 순서의 열쇠들. IP 열쇠는 네트워크마다 다른 기기일 수 있어 `network`로 구분한다.
     public func keys(network: String) -> [String] {
         [
+            mac.map { "mac:\($0)" },
             bonjourName.map { "bonjour:\($0.lowercased())" },
             hostName.map { "host:\($0.lowercased())" },
             "ip:\(network)/\(address)",
@@ -223,7 +263,8 @@ public struct DeviceIdentity: Hashable, Sendable, Codable {
 
 extension Device {
     public var identity: DeviceIdentity {
-        DeviceIdentity(address: address, hostName: displayHostName, bonjourName: bonjourName)
+        DeviceIdentity(address: address, hostName: displayHostName, bonjourName: bonjourName,
+                       mac: mac.flatMap { $0.address.isRandomized ? nil : $0.address })
     }
 }
 

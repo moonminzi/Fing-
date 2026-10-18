@@ -48,12 +48,13 @@ public struct KnownDevice: Hashable, Sendable {
     }
 }
 
-/// 같은 기기 찾기: IP, 호스트 이름, Bonjour 이름 조합으로.
+/// 같은 기기 찾기: IP, 호스트 이름, Bonjour 이름 조합으로(MAC을 알면 MAC 먼저).
 ///
+/// 0. MAC이 같으면 같은 기기(공유기 ARP 표·NetBIOS·AirPlay로 안 진짜 주소일 때)
 /// 1. Bonjour 이름이 같으면 같은 기기(DHCP로 IP가 바뀌어도)
 /// 2. 호스트 이름이 같으면 같은 기기
-/// 3. IP가 같고 이름이 서로 다르지 않으면 같은 기기(이번에 이름을 못 찾았을 수도 있으니 한쪽만 이름이 있어도 된다).
-///    IP가 같아도 Bonjour 이름이나 호스트 이름이 서로 다르면 IP를 물려받은 다른 기기다
+/// 3. IP가 같고 이름·MAC이 서로 다르지 않으면 같은 기기(이번에 이름을 못 찾았을 수도 있으니 한쪽만 있어도 된다).
+///    IP가 같아도 MAC·Bonjour 이름·호스트 이름이 서로 다르면 IP를 물려받은 다른 기기다
 ///
 /// 기록의 기기 하나는 지금 기기 하나에만 짝지어진다(강한 단서부터 차례로).
 public enum DeviceMatcher {
@@ -70,8 +71,9 @@ public enum DeviceMatcher {
                 }
             }
         }
-        pair { lhs, rhs in lhs.bonjourName != nil && same(lhs.bonjourName, rhs.bonjourName) }
-        pair { lhs, rhs in lhs.hostName != nil && same(lhs.hostName, rhs.hostName) }
+        pair { lhs, rhs in lhs.mac != nil && lhs.mac == rhs.mac }
+        pair { lhs, rhs in lhs.bonjourName != nil && same(lhs.bonjourName, rhs.bonjourName) && !macsDiffer(lhs, rhs) }
+        pair { lhs, rhs in lhs.hostName != nil && same(lhs.hostName, rhs.hostName) && !macsDiffer(lhs, rhs) }
         pair { lhs, rhs in lhs.address == rhs.address && !conflicts(lhs, rhs) }
         return result
     }
@@ -86,8 +88,13 @@ public enum DeviceMatcher {
         return lhs.caseInsensitiveCompare(rhs) == .orderedSame
     }
 
-    /// 둘 다 이름이 있는데 다르면 다른 기기
+    private static func macsDiffer(_ lhs: DeviceIdentity, _ rhs: DeviceIdentity) -> Bool {
+        lhs.mac != nil && rhs.mac != nil && lhs.mac != rhs.mac
+    }
+
+    /// 둘 다 이름(이나 MAC)이 있는데 다르면 다른 기기
     private static func conflicts(_ lhs: DeviceIdentity, _ rhs: DeviceIdentity) -> Bool {
+        if macsDiffer(lhs, rhs) { return true }
         if lhs.bonjourName != nil, rhs.bonjourName != nil, !same(lhs.bonjourName, rhs.bonjourName) { return true }
         if lhs.hostName != nil, rhs.hostName != nil, !same(lhs.hostName, rhs.hostName) { return true }
         return false

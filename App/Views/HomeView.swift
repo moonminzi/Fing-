@@ -12,6 +12,7 @@ struct HomeView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var isShowingHistory = false
     @State private var isShowingRadar = false
+    @State private var isShowingSettings = false
 
     var body: some View {
         List(selection: $selection) {
@@ -108,6 +109,13 @@ struct HomeView: View {
                     Label("스캔 기록", systemImage: "clock.arrow.circlepath")
                 }
             }
+            ToolbarItem(placement: .secondaryAction) {
+                Button {
+                    isShowingSettings = true
+                } label: {
+                    Label("설정", systemImage: "gearshape")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     Task { await network.refresh() }
@@ -122,6 +130,9 @@ struct HomeView: View {
         }
         .fullScreenCover(isPresented: $isShowingRadar) {
             RadarScreen(scan: scan)
+        }
+        .sheet(isPresented: $isShowingSettings) {
+            SettingsView()
         }
         .task {
             network.startMonitoring()
@@ -138,10 +149,12 @@ struct HomeView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
+                scan.enterForeground()
                 Task { await network.refresh() }
             case .background:
-                // 백그라운드에서는 스캔하지 않는다
-                scan.stopEverything()
+                // 진행 중인 스캔은 iOS가 주는 30초 동안만 마무리하고, 새 기기 알림(켰다면)을 예약한다
+                scan.enterBackground()
+                BackgroundCheck.schedule()
             default:
                 break
             }

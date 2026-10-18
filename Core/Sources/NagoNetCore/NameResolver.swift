@@ -12,14 +12,21 @@ public struct DeviceNames: Hashable, Sendable {
     public var services: [BonjourService]
     /// 애플 기기의 `_device-info` 모델 식별자("iPad13,1")
     public var model: String?
+    /// NetBIOS 답에 든 MAC(윈도우)
+    public var netbiosMAC: MACAddress?
+    /// SSDP 유니캐스트로 읽은 UPnP 기기 설명
+    public var upnp: UPnPDevice?
 
     public init(dnsName: String? = nil, mdnsName: String? = nil, netbiosName: String? = nil,
-                services: [BonjourService] = [], model: String? = nil) {
+                services: [BonjourService] = [], model: String? = nil, netbiosMAC: MACAddress? = nil,
+                upnp: UPnPDevice? = nil) {
         self.dnsName = dnsName
         self.mdnsName = mdnsName
         self.netbiosName = netbiosName
         self.services = services
         self.model = model
+        self.netbiosMAC = netbiosMAC
+        self.upnp = upnp
     }
 }
 
@@ -34,20 +41,24 @@ public protocol DatagramExchanging: Sendable {
     func exchange(_ payload: [UInt8], with host: IPv4, port: UInt16, timeout: Duration) async -> [UInt8]?
 }
 
-/// 역방향 DNS + 기기에 직접 묻는 질의 두 가지를 함께 돌린다.
+/// 역방향 DNS + 기기에 직접 묻는 질의 세 가지를 함께 돌린다.
 ///
 /// - **mDNS 유니캐스트**(기기의 UDP 5353): 멀티캐스트를 막아 둔 Wi-Fi(회사·아파트·관리형 AP)에서도
 ///   애플 기기·리눅스(avahi)·프린터는 직접 온 질의에 답한다(RFC 6762 §5.5, 6.7). 호스트 이름(역방향 PTR)과
 ///   Bonjour 서비스 이름(서비스 종류별 PTR)을 묻는다. 멀티캐스트가 아니라서 별도 entitlement가 필요 없다.
-/// - **NetBIOS 이름 상태**(UDP 137): 윈도우 PC·삼바 NAS의 컴퓨터 이름.
+/// - **NetBIOS 이름 상태**(UDP 137): 윈도우 PC·삼바 NAS의 컴퓨터 이름과 MAC.
+/// - **SSDP 유니캐스트**(UDP 1900, `http`가 있을 때): UPnP 기기의 이름·제조사·모델(TV·공유기·NAS·스피커).
 public struct NameResolver: DeviceNaming {
     private let dns: any HostNameResolving
     private let transport: any DatagramExchanging
+    private let http: (any HTTPFetching)?
     private let timeout: Duration
 
-    public init(dns: any HostNameResolving, transport: any DatagramExchanging, timeout: Duration = .milliseconds(1500)) {
+    public init(dns: any HostNameResolving, transport: any DatagramExchanging, http: (any HTTPFetching)? = nil,
+                timeout: Duration = .milliseconds(1500)) {
         self.dns = dns
         self.transport = transport
+        self.http = http
         self.timeout = timeout
     }
 
@@ -55,10 +66,23 @@ public struct NameResolver: DeviceNaming {
         async let dnsName = dns.hostName(for: address)
         async let mdnsName = mdnsHostName(of: address)
         async let details = mdnsServiceDetails(of: address)
-        async let netbiosName = netbiosName(of: address)
+        async let netbios = netbiosStatus(of: address)
+        async let upnp = upnpDevice(of: address)
         let (services, model) = await details
-        return await DeviceNames(dnsName: dnsName, mdnsName: mdnsName, netbiosName: netbiosName,
-                                 services: services, model: model)
+        let status = await netbios
+        return await DeviceNames(dnsName: dnsName, mdnsName: mdnsName, netbiosName: status?.name,
+                                 services: services, model: model, netbiosMAC: status?.mac, upnp: upnp)
+    }
+
+    /// SSDP 검색을 기기에 직접 보내고, 답의 LOCATION에서 설명 XML을 읽는다.
+    private func upnpDevice(of address: IPv4) async -> UPnPDevice? {
+        guard let http,
+              let reply = await transport.exchange(SSDP.searchRequest(to: address), with: address, port: SSDP.port, timeout: timeout),
+              let (location, server) = SSDP.parseResponse(reply),
+              let target = SSDP.descriptionTarget(location, expectedHost: address),
+              let body = await http.get(host: address, port: target.port, path: target.path, tls: target.tls)
+        else { return nil }
+        return SSDP.describe(body, server: server)
     }
 
     /// 서비스 이름을 묻고, 찾았으면 한 번 더 TXT(포트 정보가 빠진 서비스)와 `_device-info`(모델)를 묻는다.
@@ -104,11 +128,11 @@ public struct NameResolver: DeviceNaming {
         return Self.services(in: DNSMessage.records(in: reply, id: id), address: address)
     }
 
-    private func netbiosName(of address: IPv4) async -> String? {
+    private func netbiosStatus(of address: IPv4) async -> (name: String?, mac: MACAddress?)? {
         let id = UInt16.random(in: 1...UInt16.max)
         guard let reply = await transport.exchange(NetBIOS.nodeStatusRequest(id: id), with: address, port: 137, timeout: timeout)
         else { return nil }
-        return NetBIOS.computerName(in: reply)
+        return NetBIOS.nodeStatus(in: reply)
     }
 
     /// 역방향 PTR 답에서 호스트 이름

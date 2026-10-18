@@ -59,6 +59,7 @@ final class HistoryStore: ScanHistoryStoring {
             let record = insertDevice(at: device.address, in: networkRecord, date: now)
             record.hostName = device.identity.hostName
             record.bonjourName = device.identity.bonjourName
+            record.mac = device.identity.mac?.description
             record.name = device.discoveredName
             record.kindRaw = device.kind.rawValue
             record.alias = alias

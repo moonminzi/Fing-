@@ -66,6 +66,9 @@ struct ScanControl: View {
         case .finished(let date, let duration):
             let took = duration.formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))
             var text = "기기 \(scan.devices.count)대 · \(took) 걸림 · \(date.formatted(date: .omitted, time: .shortened))"
+            if let routerTable = scan.routerTableStatus {
+                text += "\n" + routerTable
+            }
             if scan.isFirstScanOfNetwork {
                 text += "\n이 네트워크의 첫 기록이에요. 다음 스캔부터 처음 보는 기기에 '새 기기'가 붙어요."
             } else if scan.newDeviceCount > 0 {
@@ -158,6 +161,8 @@ struct DeviceRow: View {
             parts += serviceTitles.prefix(2)
         } else if !device.openPorts.isEmpty {
             parts += device.allOpenPorts.prefix(3).map { KnownPorts.name(for: $0) ?? "\($0)" }
+        } else if device.seenOnlyInRouterTable {
+            parts.append("공유기 기록에만 있음")
         } else if device.isPingOnly {
             parts.append("핑에만 응답")
         } else if device.name == nil, kind == .unknown {
@@ -309,6 +314,40 @@ struct DeviceDetailView: View {
             } footer: {
                 if device.needsNames && device.productName == nil {
                     Text("Bonjour 광고도, 직접 물어본 mDNS·NetBIOS 답도, 공유기 DNS 이름도 없는 기기예요. 안드로이드 폰이나 IoT 기기가 흔히 그래요. 별명을 붙여 두면 다음 스캔에도 그 이름으로 보여요.")
+                }
+            }
+
+            if let mac = device.mac {
+                Section {
+                    LabeledContent("MAC 주소", value: mac.address.description)
+                    LabeledContent("제조사", value: device.macVendor ?? (mac.address.isRandomized ? "무작위 주소" : "모름"))
+                    LabeledContent("알게 된 곳", value: mac.source.rawValue)
+                } header: {
+                    Text("MAC")
+                } footer: {
+                    if mac.address.isRandomized {
+                        Text("휴대폰·태블릿이 Wi-Fi마다 바꿔 쓰는 비공개 주소라 제조사를 알 수 없어요.")
+                    }
+                }
+            }
+
+            if let upnp = device.upnp {
+                Section("UPnP(SSDP)") {
+                    if let friendlyName = upnp.friendlyName {
+                        LabeledContent("이름", value: friendlyName)
+                    }
+                    if let manufacturer = upnp.manufacturer {
+                        LabeledContent("제조사", value: manufacturer)
+                    }
+                    if let model = upnp.modelName ?? upnp.modelNumber {
+                        LabeledContent("모델", value: model)
+                    }
+                    if let type = upnp.shortType {
+                        LabeledContent("종류", value: type)
+                    }
+                    if let server = upnp.server {
+                        LabeledContent("서버", value: server)
+                    }
                 }
             }
 

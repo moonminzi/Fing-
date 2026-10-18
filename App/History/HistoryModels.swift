@@ -38,6 +38,8 @@ final class DeviceRecord {
     var address: String
     var hostName: String?
     var bonjourName: String?
+    /// 무작위가 아닌 진짜 MAC("AA:BB:CC:DD:EE:FF")
+    var mac: String?
     var alias: String?
     /// 마지막 스캔 때 찾은 이름(별명 빼고)
     var name: String?
@@ -55,7 +57,8 @@ final class DeviceRecord {
     }
 
     var identity: DeviceIdentity {
-        DeviceIdentity(address: IPv4(address) ?? IPv4(0), hostName: hostName, bonjourName: bonjourName)
+        DeviceIdentity(address: IPv4(address) ?? IPv4(0), hostName: hostName, bonjourName: bonjourName,
+                       mac: mac.flatMap { MACAddress($0) })
     }
 
     var kind: DeviceKind { DeviceKind(rawValue: kindRaw) ?? .unknown }
@@ -65,6 +68,7 @@ final class DeviceRecord {
         address = device.address.description
         hostName = device.identity.hostName ?? hostName
         bonjourName = device.identity.bonjourName ?? bonjourName
+        mac = device.identity.mac?.description ?? mac
         name = device.discoveredName ?? name
         if device.kind != .unknown || kind == .unknown {
             kindRaw = device.kind.rawValue

@@ -154,6 +154,11 @@ public enum NetBIOS {
 
     /// 답에서 컴퓨터 이름(접미사 0x00, 그룹 아님)을 꺼낸다.
     public static func computerName(in bytes: [UInt8]) -> String? {
+        nodeStatus(in: bytes)?.name
+    }
+
+    /// 답에서 컴퓨터 이름과, 이름 목록 바로 뒤 통계의 첫 6바이트(MAC, "unit ID"). 삼바는 MAC 자리를 0으로 채운다.
+    public static func nodeStatus(in bytes: [UInt8]) -> (name: String?, mac: MACAddress?)? {
         guard bytes.count > 12, bytes[2] & 0x80 != 0, DNSMessage.read16(bytes, 6) > 0 else { return nil }
         guard let (_, afterName) = DNSMessage.readName(bytes, at: 12), afterName + 10 < bytes.count else { return nil }
         let dataStart = afterName + 10
@@ -167,6 +172,9 @@ public enum NetBIOS {
             names.append((name, bytes[entry + 15], bytes[entry + 16] & 0x80 != 0))
         }
         let unique = names.filter { !$0.isGroup && !$0.name.isEmpty }
-        return (unique.first { $0.suffix == 0x00 } ?? unique.first { $0.suffix == 0x20 } ?? unique.first)?.name
+        let name = (unique.first { $0.suffix == 0x00 } ?? unique.first { $0.suffix == 0x20 } ?? unique.first)?.name
+        let macStart = dataStart + 1 + count * 18
+        let mac = macStart + 6 <= bytes.count ? MACAddress(Array(bytes[macStart..<(macStart + 6)])) : nil
+        return (name, mac)
     }
 }

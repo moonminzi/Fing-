@@ -1,6 +1,7 @@
 import Foundation
 import NagoNetCore
 import Observation
+import UIKit
 
 /// 스캔 버튼·진행률·기기 목록, 기기별 포트 스캔과 별명, 스캔 기록과 "새 기기".
 ///
@@ -43,11 +44,17 @@ final class ScanViewModel {
     private(set) var portScans: [IPv4: PortScanState] = [:]
     /// 스캔을 시작할 때 꺼내 둔 이 네트워크의 기록. "새 기기"는 여기에 없는 기기
     private(set) var baseline: NetworkBaseline = .empty
+    /// 공유기 ARP 표(SNMP)를 읽은 결과 한 줄
+    private(set) var routerTableStatus: String?
 
     /// 네트워크마다 스캐너를 만든다(핑을 그 Wi-Fi 인터페이스로 묶으려고)
     @ObservationIgnored private let makeScanner: (NetworkSnapshot) -> any NetworkScanning
     @ObservationIgnored private let bonjour: any BonjourBrowsing
     @ObservationIgnored private let naming: any DeviceNaming
+    @ObservationIgnored private let arpReader: ARPTableReader
+    @ObservationIgnored private let vendorLookup: (MACAddress) -> String?
+    /// 앱이 백그라운드로 간 뒤 진행 중인 스캔을 마무리하는 시간(약 30초)
+    @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored private let bannerGrabber: any BannerGrabbing
     @ObservationIgnored private let portScanner: any PortScanning
     @ObservationIgnored private let history: any ScanHistoryStoring
@@ -68,7 +75,10 @@ final class ScanViewModel {
             ScannerService(prober: TCPProber(), pinger: ICMPPinger(interfaceName: $0.interfaceName))
         },
         bonjour: any BonjourBrowsing = BonjourBrowser(),
-        naming: any DeviceNaming = NameResolver(dns: ReverseDNSResolver(timeout: .seconds(2)), transport: UDPExchange()),
+        naming: any DeviceNaming = NameResolver(dns: ReverseDNSResolver(timeout: .seconds(2)), transport: UDPExchange(),
+                                                http: HTTPFetcher()),
+        arpReader: ARPTableReader = ARPTableReader(transport: UDPExchange()),
+        vendorLookup: @escaping (MACAddress) -> String? = VendorLookup.vendor(for:),
         bannerGrabber: any BannerGrabbing = BannerGrabber(),
         portScanner: any PortScanning = PortScanner(prober: TCPProber()),
         history: any ScanHistoryStoring,
@@ -78,6 +88,8 @@ final class ScanViewModel {
         self.makeScanner = makeScanner
         self.bonjour = bonjour
         self.naming = naming
+        self.arpReader = arpReader
+        self.vendorLookup = vendorLookup
         self.bannerGrabber = bannerGrabber
         self.portScanner = portScanner
         self.history = history
@@ -136,7 +148,7 @@ final class ScanViewModel {
         baseline = history.baseline(for: network)
         aliasEdits = [:]
         for address in devices.keys {
-            refreshAlias(of: address)
+            refresh(address)
         }
         progress = 0
         status = .checkingAccess
@@ -165,6 +177,9 @@ final class ScanViewModel {
             let all = Array(devices.values)
             history.record(all, new: Set(all.filter(baseline.isNew).map(\.address)),
                            network: network, startedAt: startedAt, duration: duration)
+            // 이제 기록에 있으니 백그라운드 알림에서 다시 알리지 않아도 된다
+            BackgroundCheck.clearNotified()
+            endBackgroundTask()
         }
     }
 
@@ -174,6 +189,34 @@ final class ScanViewModel {
         scanTask = nil
         status = .cancelled
         isNaming = false
+        endBackgroundTask()
+    }
+
+    // MARK: 백그라운드
+
+    /// 앱이 백그라운드로 갈 때: 포트 스캔은 멈추고, 진행 중인 스캔은 iOS가 주는 시간(약 30초) 동안 마무리한다.
+    /// 시간이 다 되면 멈춘다(끝까지 못 마친 스캔은 기록하지 않는다).
+    func enterBackground() {
+        for address in Array(portScanTasks.keys) {
+            cancelPortScan(of: address)
+        }
+        guard isRunning, backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "NAGO NET 스캔 마무리") { [weak self] in
+            MainActor.assumeIsolated {
+                self?.cancel()
+                self?.endBackgroundTask()
+            }
+        }
+    }
+
+    func enterForeground() {
+        endBackgroundTask()
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     /// 다른 네트워크로 옮겨 가면 이전 결과는 지운다.
@@ -211,6 +254,17 @@ final class ScanViewModel {
     }
 
     private var legacyNetworkKey: String { scannedSubnet?.cidr ?? "" }
+
+    /// 기기 정보가 늘었을 때 따라 바뀌는 것: MAC 제조사, 별명
+    private func refresh(_ address: IPv4) {
+        if let mac = devices[address]?.mac?.address {
+            let vendor = vendorLookup(mac)
+            if devices[address]?.macVendor != vendor {
+                devices[address]?.macVendor = vendor
+            }
+        }
+        refreshAlias(of: address)
+    }
 
     /// 기기의 별명: 이번에 고친 것 → 기록(SwiftData) → 4단계의 UserDefaults
     private func refreshAlias(of address: IPv4) {
@@ -301,9 +355,11 @@ final class ScanViewModel {
                 }
                 browsing.cancelAll()
             }
-            // 웹·SSH 포트가 열린 기기의 배너(이름 없는 공유기·AP·프린터·NAS의 단서)
+            // 웹·SSH 포트가 열린 기기의 배너(이름 없는 공유기·AP·프린터·NAS의 단서)와 공유기 ARP 표(MAC)
             if !denied, !Task.isCancelled {
+                async let routerTable: Void = readRouterTable(on: network)
                 await readBanners(of: devices.values.filter { !$0.isSelf && $0.banners.isEmpty })
+                await routerTable
             }
             // 새 주소가 더 안 들어오니 남은 이름 조회만 끝내면 된다
             lookupQueue.finish()
@@ -327,7 +383,7 @@ final class ScanViewModel {
             for await address in addresses {
                 if running >= Self.maxConcurrentLookups, case let (done, names)? = await group.next() {
                     devices[done]?.merge(names)
-                    refreshAlias(of: done)
+                    refresh(done)
                     running -= 1
                 }
                 group.addTask { (address, await naming.names(for: address)) }
@@ -335,9 +391,35 @@ final class ScanViewModel {
             }
             for await (done, names) in group {
                 devices[done]?.merge(names)
-                refreshAlias(of: done)
+                refresh(done)
             }
         }
+    }
+
+    /// 공유기(다음으로 관리형 AP 몇 대)에 SNMP로 ARP 표를 물어 MAC을 채운다. 탐색엔 안 잡혔지만
+    /// 공유기가 최근에 본 기기도 목록에 더한다("공유기 기록에만 있음").
+    private func readRouterTable(on network: NetworkSnapshot) async {
+        guard AppSettings.snmpEnabled else {
+            routerTableStatus = nil
+            return
+        }
+        let community = AppSettings.snmpCommunity
+        let accessPoints = devices.values.filter { $0.kind == .router && !$0.isGateway }.map(\.address).sorted().prefix(3)
+        for router in [network.gateway.address] + accessPoints {
+            guard !Task.isCancelled else { return }
+            guard let table = await arpReader.read(from: router, community: community), !table.isEmpty else { continue }
+            for (address, mac) in table where network.scanRange.addresses.contains(address) || address == network.gateway.address {
+                upsert(address, network: network) { device in
+                    if device.responseTime == nil, !device.isSelf, device.services.isEmpty {
+                        device.seenOnlyInRouterTable = true
+                    }
+                    device.routerMAC = mac
+                }
+            }
+            routerTableStatus = "공유기 ARP 표(SNMP, \(router))에서 MAC \(table.count)개를 읽었어요."
+            return
+        }
+        routerTableStatus = "SNMP 응답이 없어 MAC은 기기가 알려 준 것만 있어요(공유기에서 SNMP가 꺼져 있거나 커뮤니티 문자열이 달라요)."
     }
 
     /// 기기들의 웹·SSH 포트에서 배너를 읽어 합친다(기기 8대씩, 기기 안의 포트는 한꺼번에).
@@ -367,7 +449,7 @@ final class ScanViewModel {
                 for banner in banners {
                     devices[address]?.merge(banner)
                 }
-                refreshAlias(of: address)
+                refresh(address)
                 if next < jobs.count, !Task.isCancelled { addNext() }
             }
         }
@@ -378,13 +460,13 @@ final class ScanViewModel {
         if var device = devices[address] {
             change(&device)
             devices[address] = device
-            refreshAlias(of: address)
+            refresh(address)
             return
         }
         var device = Device(address: address, isGateway: address == network.gateway.address)
         change(&device)
         devices[address] = device
-        refreshAlias(of: address)
+        refresh(address)
         if !device.isSelf {
             lookupQueue?.yield(address)
         }

@@ -16,7 +16,8 @@ struct BannerGrabber: BannerGrabbing {
         let request = isSSH ? nil : Array(
             "GET / HTTP/1.0\r\nHost: \(address)\r\nUser-Agent: NAGO-NET\r\nAccept: text/html\r\nConnection: close\r\n\r\n".utf8
         )
-        let read = StreamRead(host: address, port: port, tls: BannerPorts.https.contains(port), request: request, stopAtLineEnd: isSSH)
+        let read = StreamRead(host: address, port: port, tls: BannerPorts.https.contains(port), request: request,
+                              stop: isSSH ? .lineEnd : .titleEnd)
         let output = await withTaskCancellationHandler {
             await read.run(timeout: timeout)
         } onCancel: {
@@ -29,6 +30,22 @@ struct BannerGrabber: BannerGrabbing {
     }
 }
 
+/// UPnP 설명 XML 같은 작은 HTTP 문서를 읽는다(HTTP/1.0이라 서버가 다 보내고 연결을 닫는다).
+struct HTTPFetcher: HTTPFetching {
+    var timeout: Duration = .seconds(3)
+
+    func get(host: IPv4, port: UInt16, path: String, tls: Bool) async -> [UInt8]? {
+        let request = Array("GET \(path) HTTP/1.0\r\nHost: \(host):\(port)\r\nUser-Agent: NAGO-NET\r\nConnection: close\r\n\r\n".utf8)
+        let read = StreamRead(host: host, port: port, tls: tls, request: request, stop: .complete)
+        let output = await withTaskCancellationHandler {
+            await read.run(timeout: timeout)
+        } onCancel: {
+            read.stop()
+        }
+        return output.bytes.isEmpty ? nil : output.bytes
+    }
+}
+
 /// 연결해서 (요청을 보내고) 받은 바이트를 모은다. 끝나거나, 충분히 받았거나, 시간이 다 되면 그때까지 받은 것을 돌려준다.
 private final class StreamRead: @unchecked Sendable {
     struct Output: Sendable {
@@ -36,18 +53,28 @@ private final class StreamRead: @unchecked Sendable {
         var certificate: String?
     }
 
-    private static let maxBytes = 32 * 1024
+    /// 언제 그만 읽을지
+    enum Stop {
+        /// 첫 줄(SSH 인사)
+        case lineEnd
+        /// `</title>`까지(웹 배너)
+        case titleEnd
+        /// 서버가 닫을 때까지(문서 전체)
+        case complete
+    }
+
+    private static let maxBytes = 128 * 1024
 
     private let request: [UInt8]?
-    private let stopAtLineEnd: Bool
+    private let stop: Stop
     private let result = OneShot<Output>()
     private let lock = NSLock()
     private var output = Output()
     private var connection: NWConnection!
 
-    init(host: IPv4, port: UInt16, tls: Bool, request: [UInt8]?, stopAtLineEnd: Bool) {
+    init(host: IPv4, port: UInt16, tls: Bool, request: [UInt8]?, stop: Stop) {
         self.request = request
-        self.stopAtLineEnd = stopAtLineEnd
+        self.stop = stop
         connection = NWConnection(
             host: .ipv4(IPv4Address(host.description)!),
             port: NWEndpoint.Port(rawValue: port)!,
@@ -113,8 +140,14 @@ private final class StreamRead: @unchecked Sendable {
             let isDone = lock.withLock {
                 if let data { output.bytes += data }
                 if isComplete || error != nil || output.bytes.count >= Self.maxBytes { return true }
-                if stopAtLineEnd { return output.bytes.contains(0x0A) }
-                return String(decoding: output.bytes, as: UTF8.self).range(of: "</title>", options: .caseInsensitive) != nil
+                switch stop {
+                case .lineEnd:
+                    return output.bytes.contains(0x0A)
+                case .titleEnd:
+                    return String(decoding: output.bytes, as: UTF8.self).range(of: "</title>", options: .caseInsensitive) != nil
+                case .complete:
+                    return false
+                }
             }
             if isDone { finish() } else { receive() }
         }

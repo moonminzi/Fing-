@@ -44,7 +44,8 @@ public protocol DeviceClassifying: Sendable {
 
 /// 모델 식별자·이름·Bonjour 서비스·열린 포트·배너에 점수를 매겨 종류를 고른다.
 ///
-/// 점수: 게이트웨이 100, 모델 식별자 90, Bonjour 서비스 40~70, 배너 45, NetBIOS 45, 이름 40, 포트 20~50.
+/// 점수: 게이트웨이 100, 모델 식별자 90, Bonjour 서비스 40~70, UPnP 45~60, 배너 45, NetBIOS 45, 이름 40,
+/// MAC 제조사 25~40, 포트 20~50, 무작위 MAC 20.
 /// 가장 높은 종류가 20점 미만이면 "알 수 없음".
 public struct DeviceClassifier: DeviceClassifying {
     public init() {}
@@ -58,7 +59,7 @@ public struct DeviceClassifier: DeviceClassifying {
         if let model = device.model, let kind = Self.kind(forModel: model) {
             evidence.add(kind, 90, "모델 \(model)")
         }
-        for name in [device.bonjourName, device.displayHostName].compactMap({ $0 }) {
+        for name in [device.bonjourName, device.upnpName, device.displayHostName].compactMap({ $0 }) {
             if let (kind, keyword) = Self.kind(forName: name) {
                 evidence.add(kind, 40, "이름에 '\(keyword)'")
             }
@@ -75,7 +76,62 @@ public struct DeviceClassifier: DeviceClassifying {
                 }
             }
         }
+        if let upnp = device.upnp {
+            Self.addUPnPEvidence(upnp, to: &evidence)
+        }
+        if let mac = device.mac?.address {
+            if let vendor = device.macVendor, let (kind, score) = Self.kind(forVendor: vendor) {
+                evidence.add(kind, score, "MAC 제조사 \(vendor)")
+            } else if mac.isRandomized, device.netbiosName == nil {
+                evidence.add(.phone, 20, "무작위 MAC(비공개 Wi-Fi 주소)를 쓰는 휴대기기")
+            }
+        }
         return evidence.result
+    }
+
+    // MARK: UPnP
+
+    private static func addUPnPEvidence(_ upnp: UPnPDevice, to evidence: inout Evidence) {
+        let type = upnp.shortType ?? ""
+        switch type {
+        case "InternetGatewayDevice", "WANDevice", "WANConnectionDevice", "WFADevice":
+            evidence.add(.router, 60, "UPnP 공유기(\(type))")
+        case "Printer":
+            evidence.add(.printer, 60, "UPnP 프린터")
+        case "MediaRenderer":
+            evidence.add(.tv, 30, "UPnP 미디어 재생기")
+        case "MediaServer":
+            evidence.add(.nas, 25, "UPnP 미디어 서버")
+        case "ZonePlayer":
+            evidence.add(.speaker, 60, "Sonos 스피커")
+        default:
+            break
+        }
+        for hint in upnp.hints {
+            if let (kind, keyword) = kind(forName: hint) ?? kind(forServerSoftware: hint) {
+                evidence.add(kind, 45, "UPnP 설명에 '\(keyword)'")
+                break
+            }
+        }
+    }
+
+    // MARK: MAC 제조사
+
+    /// 제조사로 짐작하는 종류. 휴대폰과 TV를 다 만드는 회사(삼성·LG·애플)는 짐작하지 않는다.
+    static func kind(forVendor vendor: String) -> (DeviceKind, Int)? {
+        let lower = vendor.lowercased()
+        let rules: [([String], DeviceKind, Int)] = [
+            (["ubiquiti", "aruba", "cisco", "tp-link", "netgear", "efm networks", "mikrotik", "ruckus", "juniper",
+              "fortinet", "zyxel", "d-link", "extreme networks", "meraki", "huawei technologies"], .router, 40),
+            (["canon", "seiko epson", "brother", "ricoh", "xerox", "kyocera", "sindoh", "lexmark", "konica"], .printer, 40),
+            (["synology", "qnap", "western digital", "buffalo"], .nas, 40),
+            (["sonos", "bose", "harman", "bang & olufsen"], .speaker, 40),
+            (["roku", "vizio", "tcl", "hisense", "skyworth"], .tv, 35),
+            (["raspberry pi", "intel", "dell", "lenovo", "micro-star", "giga-byte", "microsoft", "liteon", "azurewave"],
+             .computer, 25),
+            (["xiaomi", "oppo", "vivo mobile", "oneplus", "motorola", "realme", "zte"], .phone, 25),
+        ]
+        return rules.first { rule in rule.0.contains { lower.contains($0) } }.map { ($0.1, $0.2) }
     }
 
     // MARK: 모델 식별자
