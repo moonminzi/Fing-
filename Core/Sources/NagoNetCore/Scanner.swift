@@ -32,11 +32,14 @@ public struct DiscoveredHost: Hashable, Sendable, Identifiable {
     public var responseTime: Duration
     /// 탐색 포트 중 열려 있던 것
     public var openPorts: [UInt16]
+    /// TCP에는 답이 없고 핑(ICMP)에만 답했다
+    public var viaPingOnly: Bool
 
-    public init(address: IPv4, responseTime: Duration, openPorts: [UInt16]) {
+    public init(address: IPv4, responseTime: Duration, openPorts: [UInt16], viaPingOnly: Bool = false) {
         self.address = address
         self.responseTime = responseTime
         self.openPorts = openPorts
+        self.viaPingOnly = viaPingOnly
     }
 
     public var id: IPv4 { address }
@@ -83,12 +86,15 @@ public struct ScanConfiguration: Sendable {
 /// 2. 1에서 답한 기기(열린 포트를 마저 알아보려고)와 답이 없던 주소에 나머지 포트를 한꺼번에.
 ///    없는 주소는 1에서 ARP가 실패해 커널이 곧바로 "호스트 없음"을 돌려주는 경우가 많아 빨리 끝나고,
 ///    방화벽 때문에 첫 포트에 답하지 않은 기기(iPhone의 62078, Windows의 445 등)는 여기서 찾는다.
+///    `pinger`가 있으면 답이 없던 주소에는 핑(ICMP)도 함께 보내 TCP를 모두 막은 기기도 찾는다.
 public actor ScannerService: NetworkScanning {
     private let prober: any HostProbing
+    private let pinger: (any Pinging)?
     public let configuration: ScanConfiguration
 
-    public init(prober: any HostProbing, configuration: ScanConfiguration = ScanConfiguration()) {
+    public init(prober: any HostProbing, pinger: (any Pinging)? = nil, configuration: ScanConfiguration = ScanConfiguration()) {
         self.prober = prober
+        self.pinger = pinger
         self.configuration = configuration
     }
 
@@ -145,11 +151,12 @@ public actor ScannerService: NetworkScanning {
         }
         guard !otherPorts.isEmpty, !Task.isCancelled else { return }
 
-        // 2. 나머지 포트: 찾은 기기 먼저(열린 포트를 빨리 채우려고), 그다음 답이 없던 주소
-        let followUp = targets.filter { found[$0] != nil } + silent
-        let hostLimit = max(1, limit / otherPorts.count)
-        await forEachConcurrently(followUp, limit: hostLimit) { address in
-            await Self.probe(address, ports: otherPorts, prober: prober, timeout: timeout)
+        // 2. 나머지 포트: 찾은 기기 먼저(열린 포트를 빨리 채우려고), 그다음 답이 없던 주소(+ 핑)
+        let pinger = self.pinger
+        let followUp = targets.filter { found[$0] != nil }.map { ($0, false) } + silent.map { ($0, true) }
+        let hostLimit = max(1, limit / (otherPorts.count + (pinger == nil ? 0 : 1)))
+        await forEachConcurrently(followUp, limit: hostLimit) { address, ping in
+            await Self.probe(address, ports: otherPorts, prober: prober, pinger: ping ? pinger : nil, timeout: timeout)
         } onResult: { report in
             if report.denied {
                 denied = true
@@ -168,19 +175,32 @@ public actor ScannerService: NetworkScanning {
         }
     }
 
-    /// 한 주소의 여러 포트를 한꺼번에 두드린다. "호스트 없음"이나 권한 거부가 오면 나머지는 그만둔다.
+    private enum Answer: Sendable {
+        case port(UInt16, PortProbeResult)
+        case ping(Duration?)
+    }
+
+    /// 한 주소의 여러 포트(와 핑)를 한꺼번에 두드린다. "호스트 없음"이나 권한 거부가 오면 나머지는 그만둔다.
     private static func probe(
-        _ address: IPv4, ports: [UInt16], prober: any HostProbing, timeout: Duration
+        _ address: IPv4, ports: [UInt16], prober: any HostProbing, pinger: (any Pinging)?, timeout: Duration
     ) async -> HostReport {
-        await withTaskGroup(of: (UInt16, PortProbeResult).self) { group in
+        await withTaskGroup(of: Answer.self) { group in
             for port in ports {
-                group.addTask { (port, await prober.probe(address, port: port, timeout: timeout)) }
+                group.addTask { .port(port, await prober.probe(address, port: port, timeout: timeout)) }
+            }
+            if let pinger {
+                group.addTask { .ping(await pinger.ping(address, sequence: 1, timeout: timeout)) }
             }
             var report = HostReport(address: address)
-            while let (port, result) = await group.next() {
-                report.record(port, result)
-                if result == .unreachable || result == .localNetworkDenied {
-                    group.cancelAll()
+            while let answer = await group.next() {
+                switch answer {
+                case .port(let port, let result):
+                    report.record(port, result)
+                    if result == .unreachable || result == .localNetworkDenied {
+                        group.cancelAll()
+                    }
+                case .ping(let time):
+                    if let time { report.recordPing(time) }
                 }
             }
             return report
@@ -223,6 +243,8 @@ struct HostReport: Sendable {
     var openPorts: [UInt16] = []
     var fastest: Duration?
     var denied = false
+    /// TCP 답(연결·거부)이 하나라도 있었는지
+    var answeredTCP = false
 
     mutating func record(_ port: UInt16, _ result: PortProbeResult) {
         if case .open = result {
@@ -230,17 +252,23 @@ struct HostReport: Sendable {
         }
         if let time = result.responseTime {
             fastest = min(fastest ?? time, time)
+            answeredTCP = true
         }
         if result == .localNetworkDenied {
             denied = true
         }
     }
 
+    mutating func recordPing(_ time: Duration) {
+        fastest = min(fastest ?? time, time)
+    }
+
     /// 이미 찾은 기기 정보에 합친다. 기기가 있다는 증거가 하나도 없으면 nil.
     func merged(into existing: DiscoveredHost?) -> DiscoveredHost? {
         guard let existing else {
             guard let fastest else { return nil }
-            return DiscoveredHost(address: address, responseTime: fastest, openPorts: openPorts.sorted())
+            return DiscoveredHost(address: address, responseTime: fastest, openPorts: openPorts.sorted(),
+                                  viaPingOnly: !answeredTCP)
         }
         var host = existing
         host.openPorts = Array(Set(existing.openPorts + openPorts)).sorted()

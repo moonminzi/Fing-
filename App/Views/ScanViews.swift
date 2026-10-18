@@ -1,3 +1,4 @@
+import Charts
 import NagoNetCore
 import SwiftUI
 import UIKit
@@ -157,6 +158,8 @@ struct DeviceRow: View {
             parts += serviceTitles.prefix(2)
         } else if !device.openPorts.isEmpty {
             parts += device.allOpenPorts.prefix(3).map { KnownPorts.name(for: $0) ?? "\($0)" }
+        } else if device.isPingOnly {
+            parts.append("핑에만 응답")
         } else if device.name == nil, kind == .unknown {
             parts.append("응답함 · 열린 포트 없음")
         }
@@ -233,6 +236,10 @@ struct DeviceIcon: View {
 struct DeviceDetailView: View {
     let device: Device
     let scan: ScanViewModel
+    /// iPad에서 레이더로 돌아가기(없으면 버튼을 숨긴다)
+    var onShowRadar: (@MainActor () -> Void)?
+
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     @State private var isEditingAlias = false
     @State private var aliasDraft = ""
@@ -336,6 +343,8 @@ struct DeviceDetailView: View {
             }
 
             if !device.isSelf {
+                WebPagesSection(device: device)
+                PingSection(device: device, pinger: scan.pinger)
                 PortsSection(device: device, scan: scan)
             }
         }
@@ -343,6 +352,17 @@ struct DeviceDetailView: View {
         .textSelection(.enabled)
         .navigationTitle(device.name ?? device.address.description)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let onShowRadar, sizeClass == .regular {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        onShowRadar()
+                    } label: {
+                        Label("레이더", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                }
+            }
+        }
         .alert("별명", isPresented: $isEditingAlias) {
             TextField(device.discoveredName ?? device.address.description, text: $aliasDraft)
             Button("저장") { scan.setAlias(aliasDraft, for: device.address) }
@@ -441,5 +461,109 @@ private struct PortsSection: View {
                 Text("지금은 기기를 찾을 때 확인한 포트 \(ScanConfiguration.discoveryPorts.count)개 기준이에요.")
             }
         }
+    }
+}
+
+/// 웹 포트가 열린 기기의 관리 페이지를 사파리로 연다(자체 서명 인증서면 사파리가 경고한다).
+private struct WebPagesSection: View {
+    let device: Device
+
+    var body: some View {
+        let pages = device.allOpenPorts.compactMap(url(for:))
+        if !pages.isEmpty {
+            Section {
+                ForEach(pages, id: \.self) { url in
+                    Link(destination: url) {
+                        Label(url.absoluteString, systemImage: "safari")
+                    }
+                }
+            } header: {
+                Text("웹 관리 페이지")
+            } footer: {
+                Text("공유기·프린터·NAS의 설정 화면이 열려요. HTTPS는 자체 서명 인증서라 사파리가 경고할 수 있어요.")
+            }
+        }
+    }
+
+    private func url(for port: UInt16) -> URL? {
+        let scheme: String
+        if BannerPorts.https.contains(port) {
+            scheme = "https"
+        } else if BannerPorts.http.contains(port) {
+            scheme = "http"
+        } else {
+            return nil
+        }
+        let isDefault = (scheme == "http" && port == 80) || (scheme == "https" && port == 443)
+        return URL(string: "\(scheme)://\(device.address)\(isDefault ? "" : ":\(port)")/")
+    }
+}
+
+/// 핑(ICMP) 10번: 응답 시간 막대, 최소·평균·최대·흔들림·손실.
+private struct PingSection: View {
+    let device: Device
+    let pinger: any Pinging
+
+    @State private var session = PingSession()
+
+    var body: some View {
+        Section {
+            if session.isRunning {
+                HStack {
+                    ProgressView()
+                    Text("핑 보내는 중… \(session.samples.count)/\(PingSession.count)")
+                    Spacer()
+                    Button("중지", role: .destructive) { session.stop() }
+                        .buttonStyle(.borderless)
+                }
+            } else {
+                Button {
+                    session.start(device.address, pinger: pinger)
+                } label: {
+                    Label(session.samples.isEmpty ? "핑 \(PingSession.count)번 보내기" : "다시 핑", systemImage: "waveform.path.ecg")
+                }
+            }
+
+            if !session.samples.isEmpty {
+                PingChart(samples: session.samples)
+                    .frame(height: 110)
+                    .padding(.vertical, 4)
+                let stats = session.statistics
+                LabeledContent("받음", value: "\(stats.received)/\(stats.sent) · 손실 \(stats.lossRate.formatted(.percent.precision(.fractionLength(0))))")
+                if let minimum = stats.minimum, let average = stats.average, let maximum = stats.maximum {
+                    LabeledContent("최소 / 평균 / 최대",
+                                   value: "\(minimum.shortDescription) / \(average.shortDescription) / \(maximum.shortDescription)")
+                }
+                if let jitter = stats.jitter {
+                    LabeledContent("흔들림(지터)", value: jitter.shortDescription)
+                }
+            }
+        } header: {
+            Text("핑(ICMP)")
+        } footer: {
+            Text("응답이 없으면 기기가 잠들었거나 방화벽이 핑을 막는 거예요. iPhone은 화면이 꺼지면 늦게 답하기도 해요.")
+        }
+        .onDisappear { session.stop() }
+    }
+}
+
+private struct PingChart: View {
+    let samples: [PingSession.Sample]
+
+    var body: some View {
+        Chart(samples) { sample in
+            if let time = sample.time {
+                BarMark(x: .value("순번", Double(sample.sequence)), y: .value("ms", time.milliseconds))
+                    .foregroundStyle(.tint)
+            } else {
+                // 답이 없던 핑은 바닥에 빨간 점
+                PointMark(x: .value("순번", Double(sample.sequence)), y: .value("ms", 0.0))
+                    .foregroundStyle(.red)
+                    .symbol(.cross)
+            }
+        }
+        .chartXScale(domain: 0.5...(Double(PingSession.count) + 0.5))
+        .chartXAxis(.hidden)
+        .chartYAxisLabel("ms")
     }
 }

@@ -18,12 +18,19 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 320, ideal: 380)
         } detail: {
             if let selection, let device = scan.devices[selection] {
-                DeviceDetailView(device: device, scan: scan)
+                DeviceDetailView(device: device, scan: scan, onShowRadar: { self.selection = nil })
+                    .id(selection)
+            } else if !scan.devices.isEmpty {
+                // iPad: 고른 기기가 없으면 오른쪽 칸 전체가 레이더
+                RadarView(devices: Array(scan.devices.values), isScanning: scan.isRunning,
+                          newAddresses: scan.newAddresses, selection: nil, onSelect: { selection = $0 })
+                    .navigationTitle("네트워크 레이더")
+                    .navigationBarTitleDisplayMode(.inline)
             } else {
                 ContentUnavailableView(
                     "기기를 골라 주세요",
                     systemImage: "laptopcomputer.and.iphone",
-                    description: Text("스캔한 뒤 목록에서 기기를 누르면 자세한 정보가 여기 나와요.")
+                    description: Text("스캔하면 여기에 네트워크 레이더가 나오고, 기기를 누르면 자세한 정보가 나와요.")
                 )
             }
         }

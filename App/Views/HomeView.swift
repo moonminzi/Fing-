@@ -9,7 +9,9 @@ struct HomeView: View {
     @Binding var selection: IPv4?
 
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var isShowingHistory = false
+    @State private var isShowingRadar = false
 
     var body: some View {
         List(selection: $selection) {
@@ -82,6 +84,23 @@ struct HomeView: View {
         .navigationTitle("NAGO NET")
         .refreshable { await network.refresh() }
         .toolbar {
+            // iPhone은 레이더를 따로 띄운다(iPad는 오른쪽 칸이 레이더)
+            if sizeClass == .compact, !scan.devices.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        isShowingRadar = true
+                    } label: {
+                        Label("레이더", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                }
+            }
+            if !scan.isRunning, let export = scan.export {
+                ToolbarItem(placement: .primaryAction) {
+                    ShareLink(item: export, preview: SharePreview("스캔 결과(CSV)", image: Image(systemName: "tablecells"))) {
+                        Label("CSV로 내보내기", systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     isShowingHistory = true
@@ -100,6 +119,9 @@ struct HomeView: View {
         }
         .sheet(isPresented: $isShowingHistory) {
             HistoryView()
+        }
+        .fullScreenCover(isPresented: $isShowingRadar) {
+            RadarScreen(scan: scan)
         }
         .task {
             network.startMonitoring()

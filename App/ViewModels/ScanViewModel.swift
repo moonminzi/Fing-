@@ -44,7 +44,8 @@ final class ScanViewModel {
     /// 스캔을 시작할 때 꺼내 둔 이 네트워크의 기록. "새 기기"는 여기에 없는 기기
     private(set) var baseline: NetworkBaseline = .empty
 
-    @ObservationIgnored private let scanner: any NetworkScanning
+    /// 네트워크마다 스캐너를 만든다(핑을 그 Wi-Fi 인터페이스로 묶으려고)
+    @ObservationIgnored private let makeScanner: (NetworkSnapshot) -> any NetworkScanning
     @ObservationIgnored private let bonjour: any BonjourBrowsing
     @ObservationIgnored private let naming: any DeviceNaming
     @ObservationIgnored private let bannerGrabber: any BannerGrabbing
@@ -63,7 +64,9 @@ final class ScanViewModel {
     @ObservationIgnored private var lookupQueue: AsyncStream<IPv4>.Continuation?
 
     init(
-        scanner: any NetworkScanning = ScannerService(prober: TCPProber()),
+        makeScanner: @escaping (NetworkSnapshot) -> any NetworkScanning = {
+            ScannerService(prober: TCPProber(), pinger: ICMPPinger(interfaceName: $0.interfaceName))
+        },
         bonjour: any BonjourBrowsing = BonjourBrowser(),
         naming: any DeviceNaming = NameResolver(dns: ReverseDNSResolver(timeout: .seconds(2)), transport: UDPExchange()),
         bannerGrabber: any BannerGrabbing = BannerGrabber(),
@@ -72,7 +75,7 @@ final class ScanViewModel {
         legacyAliases: any AliasStoring = AliasStore(),
         access: any LocalNetworkAccessChecking = LocalNetworkAccess()
     ) {
-        self.scanner = scanner
+        self.makeScanner = makeScanner
         self.bonjour = bonjour
         self.naming = naming
         self.bannerGrabber = bannerGrabber
@@ -100,6 +103,22 @@ final class ScanViewModel {
 
     var newDeviceCount: Int {
         devices.values.filter(baseline.isNew).count
+    }
+
+    var newAddresses: Set<IPv4> {
+        Set(devices.values.filter(baseline.isNew).map(\.address))
+    }
+
+    /// 상세 화면의 핑 도구용(Wi-Fi 인터페이스로 묶는다)
+    var pinger: any Pinging {
+        ICMPPinger(interfaceName: scannedNetwork?.interfaceName)
+    }
+
+    /// 지금 목록을 CSV로 내보내기. 기기가 없으면 nil
+    var export: ScanExport? {
+        guard !devices.isEmpty else { return nil }
+        let csv = DeviceCSV.make(Array(devices.values), isNew: baseline.isNew)
+        return ScanExport(csv: csv, networkName: scannedNetwork?.ssid ?? scannedSubnet?.cidr ?? "network", date: .now)
     }
 
     /// 이 네트워크를 처음 스캔하는 중(그래서 "새 기기"를 표시하지 않는다)
@@ -265,7 +284,7 @@ final class ScanViewModel {
             await withTaskGroup(of: Void.self) { browsing in
                 browsing.addTask { await self.browseBonjour(on: network) }
 
-                for await event in scanner.scan(network.scanTargets) {
+                for await event in makeScanner(network).scan(network.scanTargets) {
                     switch event {
                     case .progress(let completed, let total):
                         progress = total > 0 ? Double(completed) / Double(total) : 1

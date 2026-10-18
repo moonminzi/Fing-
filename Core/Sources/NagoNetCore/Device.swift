@@ -25,6 +25,8 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var banners: [ServiceBanner] = []
     /// 상세 화면의 포트 스캔(주요 포트 100개)에서 찾은 열린 포트. 아직 안 했으면 nil
     public var scannedPorts: [UInt16]?
+    /// TCP에는 답이 없고 핑(ICMP)에만 답한 기기
+    public var isPingOnly = false
 
     public init(
         address: IPv4,
@@ -119,6 +121,7 @@ public struct Device: Hashable, Sendable, Identifiable {
 
     /// 탐색 결과를 합친다(같은 주소가 여러 번 온다).
     public mutating func merge(_ host: DiscoveredHost) {
+        isPingOnly = host.viaPingOnly && (responseTime == nil || isPingOnly)
         responseTime = responseTime.map { min($0, host.responseTime) } ?? host.responseTime
         openPorts = Array(Set(openPorts + host.openPorts)).sorted()
     }
