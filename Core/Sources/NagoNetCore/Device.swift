@@ -42,12 +42,23 @@ public struct Device: Hashable, Sendable, Identifiable {
 
     public var id: IPv4 { address }
 
-    /// 사람이 읽을 이름. 별명 → Bonjour 이름 → 호스트 이름(mDNS → NetBIOS → DNS) → 배너의 제품명 → "공유기" 순.
-    /// 모르면 nil(화면에는 IP)
+    /// 사람이 읽을 이름. 별명 → Bonjour 이름 → 호스트 이름(mDNS → NetBIOS → DNS) → 배너의 제품명 →
+    /// 배너의 제조사("Aruba AP") → "공유기" 순. 모르면 nil(화면에는 IP)
     public var name: String? {
         if let alias { return alias }
         if isSelf { return "이 기기" }
-        return bonjourName ?? displayHostName ?? productName ?? (isGateway ? "공유기" : nil)
+        return bonjourName ?? displayHostName ?? productName ?? vendorName ?? (isGateway ? "공유기" : nil)
+    }
+
+    /// 배너에서 찾은 제조사 + 종류("Aruba AP", "Synology NAS", "HP 프린터")
+    public var vendorName: String? {
+        guard let vendor = banners.lazy.compactMap(\.vendor).first else { return nil }
+        if isGateway { return "\(vendor) 공유기" }
+        switch kind {
+        case .router: return "\(vendor) AP"
+        case .unknown: return vendor
+        default: return "\(vendor) \(kind.title)"
+        }
     }
 
     /// 별명을 빼고 기기에서 찾은 이름(별명을 고칠 때 원래 이름으로 보여 준다)

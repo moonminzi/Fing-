@@ -4,9 +4,13 @@ import SwiftUI
 /// iPad는 왼쪽 목록·오른쪽 상세 두 칸, iPhone은 접혀서 한 칸씩 쌓인다.
 struct RootView: View {
     @State private var network = NetworkViewModel()
-    @State private var scan = ScanViewModel()
+    @State private var scan: ScanViewModel
     @State private var location = LocationPermission()
     @State private var selection: IPv4?
+
+    init(history: any ScanHistoryStoring) {
+        _scan = State(initialValue: ScanViewModel(history: history))
+    }
 
     var body: some View {
         NavigationSplitView {

@@ -11,7 +11,7 @@ Swift 6 · SwiftUI · Swift Concurrency · Network 프레임워크 · SwiftData,
 | 2 | TCP 연결로 기기 탐색, 진행률·취소, 기기 목록, 로컬 네트워크 권한 거부 안내 | ✅ |
 | 3 | Bonjour(NWBrowser)와 역방향 DNS로 기기 이름 찾기 | ✅ |
 | 4 | 기기 종류 추정, 상세 화면, 포트 100개 스캔, 별명 | ✅ |
-| 5 | SwiftData로 네트워크별 기록, "새 기기" 배지 | |
+| 5 | SwiftData로 네트워크별 기록, "새 기기" 배지 | ✅ |
 
 ## 구조
 
@@ -33,10 +33,13 @@ Core/                       NagoNetCore: UI·Network 프레임워크 없음 → 
   DeviceClassifier.swift    DeviceKind, 점수로 종류 추정(DeviceClassifying 프로토콜)
   PortScanner.swift         주요 포트 100개 스캔(PortScanning 프로토콜)
   KnownPorts.swift          포트 100개와 서비스 이름
+  History.swift             NetworkIdentity, DeviceMatcher(같은 기기 찾기), NetworkBaseline("새 기기"),
+                            ScanHistoryStoring 프로토콜
 App/                        NagoNet 앱
   Services/                 SystemNetworkInfo(SSID: NEHotspotNetwork), WiFiPathMonitor, LocationPermission,
                             TCPProber(NWConnection), LocalNetworkAccess(권한 확인), BonjourBrowser(NWBrowser),
                             UDPExchange(NWConnection UDP), BannerGrabber(TCP/TLS), AliasStore(UserDefaults)
+  History/                  SwiftData 모델(NetworkRecord·DeviceRecord·ScanRecord·ScanEntry), HistoryStore
   ViewModels/               @Observable 뷰모델
   Views/                    SwiftUI 화면
 ```
@@ -117,11 +120,29 @@ iOS는 다른 기기의 MAC 주소(제조사)를 읽을 수 없어서, 모은 �
 HTTP는 `GET /`의 `Server`·`WWW-Authenticate realm`·`<title>`, HTTPS는 자체 서명 인증서를 받아들이고 인증서 이름까지,
 SSH는 첫 줄. 로그인·오류 같은 흔한 제목은 이름으로 쓰지 않는다. 이름이 없는 공유기·AP·프린터·NAS가 제품명으로 보인다.
 
-**별명**: 상세 화면에서 붙인다. `Bonjour 이름 → 호스트 이름 → (네트워크별) IP` 열쇠로 UserDefaults에 두어
-다음 스캔에서도 같은 기기에 붙는다(5단계에서 SwiftData로 옮긴다).
+**별명**: 상세 화면에서 붙인다. SwiftData의 기억하는 기기(`DeviceRecord`)에 저장돼 다음 스캔에서도 같은 기기에 붙는다.
+(4단계 때 UserDefaults에 붙인 별명은 다음 기록 때 SwiftData로 옮겨진다.)
+
+**제조사 이름**: 배너(인증서·리디렉션 주소·제목·Server·SSH)에 Aruba·UniFi·Cisco·ipTIME·Synology·HP 같은 이름이 보이면
+"Aruba AP", "Synology NAS", "HP 프린터"처럼 이름을 붙인다.
 
 **포트 스캔**: 상세 화면의 버튼으로 주요 포트 100개(`KnownPorts`)를 동시 20개, 1초 제한으로 두드린다.
 끝나면 새로 찾은 웹·SSH 포트의 배너도 읽고 종류를 다시 짐작한다.
+
+### 기록과 "새 기기"
+
+- 스캔을 **끝까지 마치면** SwiftData에 네트워크별로 남긴다(중지한 스캔은 남기지 않는다). 네트워크마다 최근 30번.
+  - `NetworkRecord`: 네트워크. SSID가 있으면 SSID로, 없으면(위치 권한 없음) 대역 + 게이트웨이로 알아본다.
+    처음에 SSID 없이 기억했다가 나중에 SSID를 알게 되면 채운다
+  - `DeviceRecord`: 이 네트워크에서 본 적 있는 기기(마지막 IP·호스트 이름·Bonjour 이름·별명·종류·처음/마지막 본 날·본 횟수)
+  - `ScanRecord` / `ScanEntry`: 스캔 한 번과 그때 본 기기들(이름·종류·응답 시간·열린 포트·새 기기 여부)
+- **같은 기기 찾기**(`DeviceMatcher`): ① Bonjour 이름이 같으면(IP가 바뀌어도) ② 호스트 이름이 같으면
+  ③ IP가 같고 이름이 서로 다르지 않으면. 같은 IP에 다른 이름이면 IP를 물려받은 다른 기기로 본다.
+  기억하는 기기 하나는 지금 기기 하나에만 짝지어진다.
+- **새 기기**: 스캔을 시작할 때 꺼내 둔 이 네트워크의 기억하는 기기 중 어디에도 짝이 없는 기기.
+  이름이 나중에 풀리면 다시 판단한다. 네트워크의 **첫 스캔**은 비교할 기록이 없어 표시하지 않는다.
+- 툴바의 시계 버튼 → **스캔 기록**: 네트워크 목록 → 스캔들(새 기기 수)과 기억하는 기기 → 스캔 한 번의 기기 목록.
+  밀어서 지우기.
 
 ## iOS에서 하지 않는 것
 
@@ -216,3 +237,15 @@ swift test --package-path Core
    중지 버튼도 확인. 프린터(631·9100)나 NAS(5000·5001)는 포트 스캔 뒤 종류가 더 정확해진다.
 6. 이름 없는 기기에 **별명 붙이기** → 목록에 바로 반영. **다시 스캔**해도 그대로 붙어 있는지,
    앱을 껐다 켜고 스캔해도 남아 있는지 본다. **별명 지우기**로 원래 이름으로.
+
+### 5단계: 기록과 "새 기기"
+
+1. 스캔을 끝까지 마친다. 버튼 아래에 "이 네트워크의 첫 기록이에요…"가 나온다(첫 스캔엔 새 기기 배지 없음).
+2. 툴바의 **시계 버튼 → 스캔 기록**에 네트워크(GreenLamp49)와 스캔 1번, 기억하는 기기 수가 보이는지 본다.
+3. **다시 스캔**한다. 지난 스캔에 없던 기기(그사이 들어온 폰·노트북)에 빨간 **새 기기** 배지가 붙고,
+   목록 머리에 "새 기기 N대"가 나온다. 아무도 안 들어왔으면 배지가 없는 게 정상.
+   - 확인용: 다른 폰의 Wi-Fi를 껐다가 첫 스캔 뒤에 켜면 그 폰이 새 기기로 뜬다.
+4. 기록에서 스캔을 누르면 그때 본 기기 목록(새 기기 표시 포함). 기억하는 기기에는 처음·마지막 본 날과 본 횟수.
+5. 별명을 붙이고 앱을 완전히 껐다 켠 뒤 스캔해도 별명이 남는지 본다(이제 SwiftData).
+6. iPad가 IP를 새로 받아도(Wi-Fi 껐다 켜기) Bonjour 이름으로 같은 기기로 알아봐 새 기기로 뜨지 않는지 본다.
+7. `.14`·`.15` 같은 Aruba AP가 **Aruba AP**라는 이름으로 보이고, 기기 정보에 **리디렉션** 주소가 나오는지 본다.

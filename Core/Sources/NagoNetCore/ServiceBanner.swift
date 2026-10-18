@@ -13,15 +13,18 @@ public struct ServiceBanner: Hashable, Sendable {
     public var certificate: String?
     /// SSH 버전 문자열("OpenSSH_9.6p1 Ubuntu-3ubuntu13" 같은)
     public var ssh: String?
+    /// 3xx 응답의 이동할 주소(`Location`). 관리 페이지·로그인 포털 주소에 제조사가 드러나는 일이 많다
+    public var redirect: String?
 
     public init(port: UInt16, server: String? = nil, title: String? = nil, realm: String? = nil,
-                certificate: String? = nil, ssh: String? = nil) {
+                certificate: String? = nil, ssh: String? = nil, redirect: String? = nil) {
         self.port = port
         self.server = server
         self.title = title
         self.realm = realm
         self.certificate = certificate
         self.ssh = ssh
+        self.redirect = redirect
     }
 
     /// 기기 이름으로 쓸 만한 제품명. 로그인·오류 같은 흔한 제목이나 IP 모양 인증서 이름은 버린다.
@@ -31,8 +34,30 @@ public struct ServiceBanner: Hashable, Sendable {
 
     /// 종류를 짐작할 때 훑어볼 글 전부
     public var hints: [String] {
-        [server, title, realm, certificate, ssh].compactMap { $0 }
+        [server, title, realm, certificate, ssh, redirect].compactMap { $0 }
     }
+
+    /// 배너 글에 드러난 제조사·제품군("Aruba", "UniFi", "Synology")
+    public var vendor: String? {
+        for hint in hints {
+            let lower = hint.lowercased()
+            if let match = Self.vendors.first(where: { lower.contains($0.0) }) { return match.1 }
+        }
+        return nil
+    }
+
+    /// (찾을 글, 보여 줄 이름). 더 구체적인 것 먼저
+    static let vendors: [(String, String)] = [
+        ("arubanetworks", "Aruba"), ("aruba", "Aruba"), ("unifi", "UniFi"), ("ubnt", "Ubiquiti"),
+        ("ubiquiti", "Ubiquiti"), ("meraki", "Cisco Meraki"), ("cisco", "Cisco"), ("ruckus", "Ruckus"),
+        ("fortinet", "Fortinet"), ("fortigate", "Fortinet"), ("mikrotik", "MikroTik"), ("routeros", "MikroTik"),
+        ("iptime", "ipTIME"), ("tp-link", "TP-Link"), ("tplink", "TP-Link"), ("netgear", "NETGEAR"),
+        ("asuswrt", "ASUS"), ("openwrt", "OpenWrt"), ("juniper", "Juniper"), ("extreme", "Extreme"),
+        ("synology", "Synology"), ("diskstation", "Synology"), ("qnap", "QNAP"), ("truenas", "TrueNAS"),
+        ("hikvision", "Hikvision"), ("dahua", "Dahua"), ("laserjet", "HP"), ("hp http server", "HP"),
+        ("epson", "Epson"), ("canon", "Canon"), ("brother", "Brother"), ("ricoh", "RICOH"), ("xerox", "Xerox"),
+        ("sindoh", "Sindoh"), ("kyocera", "Kyocera"),
+    ]
 
     static func isMeaningful(_ text: String) -> Bool {
         let lower = text.lowercased()
@@ -45,7 +70,7 @@ public struct ServiceBanner: Hashable, Sendable {
             "로그인", "접속", "오류",
         ]
         if generic.contains(where: { lower.contains($0) }) { return false }
-        if ["404", "403", "401", "400", "500", "502", "503"].contains(where: { lower.hasPrefix($0) }) { return false }
+        if ["30", "40", "50"].contains(where: { lower.hasPrefix($0) }) && lower.prefix(3).allSatisfy(\.isNumber) { return false }
         return true
     }
 }
@@ -63,6 +88,7 @@ extension ServiceBanner {
 
         var server: String?
         var realm: String?
+        var location: String?
         for line in head.split(whereSeparator: \.isNewline).dropFirst() {
             guard let colon = line.firstIndex(of: ":") else { continue }
             let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
@@ -70,11 +96,16 @@ extension ServiceBanner {
             switch name {
             case "server": server = clean(value)
             case "www-authenticate": realm = quotedValue(named: "realm", in: value).flatMap(clean)
+            case "location": location = clean(value)
             default: break
             }
         }
-        return ServiceBanner(port: port, server: server, title: title(in: body), realm: realm,
-                             certificate: certificate.flatMap(clean))
+        // "302"처럼 숫자뿐인 제목은 응답 코드라서 버린다
+        let pageTitle = title(in: body).flatMap { $0.allSatisfy(\.isNumber) ? nil : $0 }
+        let status = head.split(separator: " ", maxSplits: 2).dropFirst().first.flatMap { Int($0) } ?? 0
+        return ServiceBanner(port: port, server: server, title: pageTitle, realm: realm,
+                             certificate: certificate.flatMap(clean),
+                             redirect: (300..<400).contains(status) ? location : nil)
     }
 
     /// SSH 서버가 연결하자마자 보내는 첫 줄("SSH-2.0-...")에서 배너를 만든다.

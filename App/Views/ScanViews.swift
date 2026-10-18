@@ -64,7 +64,13 @@ struct ScanControl: View {
         switch scan.status {
         case .finished(let date, let duration):
             let took = duration.formatted(.units(allowed: [.minutes, .seconds], width: .abbreviated))
-            return "기기 \(scan.devices.count)대 · \(took) 걸림 · \(date.formatted(date: .omitted, time: .shortened))"
+            var text = "기기 \(scan.devices.count)대 · \(took) 걸림 · \(date.formatted(date: .omitted, time: .shortened))"
+            if scan.isFirstScanOfNetwork {
+                text += "\n이 네트워크의 첫 기록이에요. 다음 스캔부터 처음 보는 기기에 '새 기기'가 붙어요."
+            } else if scan.newDeviceCount > 0 {
+                text += " · 새 기기 \(scan.newDeviceCount)대"
+            }
+            return text
         case .cancelled:
             return "중지됨 · 그때까지 찾은 기기 \(scan.devices.count)대"
         default:
@@ -101,6 +107,7 @@ struct LocalNetworkDeniedView: View {
 /// 목록 한 줄: 종류 아이콘, 이름(없으면 IP), IP·종류·서비스나 열린 포트, 응답 시간.
 struct DeviceRow: View {
     let device: Device
+    var isNew = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -110,6 +117,9 @@ struct DeviceRow: View {
                     Text(device.name ?? device.address.description)
                         .font(.body.weight(.medium))
                         .lineLimit(1)
+                    if isNew {
+                        TagBadge(text: "새 기기", tint: .red)
+                    }
                     if device.isGateway, device.name != "공유기" {
                         TagBadge(text: "공유기", tint: .green)
                     }
@@ -373,7 +383,7 @@ private struct BannerRows: View {
     private var lines: [Line] {
         let candidates: [(String, String?)] = [
             ("웹 페이지 제목", banner.title), ("인증 영역", banner.realm), ("인증서", banner.certificate),
-            ("서버", banner.server), ("SSH", banner.ssh),
+            ("리디렉션", banner.redirect), ("서버", banner.server), ("SSH", banner.ssh),
         ]
         return candidates.compactMap { candidate in candidate.1.map { Line(label: candidate.0, value: $0) } }
     }

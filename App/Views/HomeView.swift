@@ -9,6 +9,7 @@ struct HomeView: View {
     @Binding var selection: IPv4?
 
     @Environment(\.scenePhase) private var scenePhase
+    @State private var isShowingHistory = false
 
     var body: some View {
         List(selection: $selection) {
@@ -59,11 +60,11 @@ struct HomeView: View {
             if !scan.devices.isEmpty {
                 Section {
                     ForEach(scan.sortedDevices) { device in
-                        DeviceRow(device: device)
+                        DeviceRow(device: device, isNew: scan.isNew(device))
                     }
                 } header: {
                     HStack {
-                        Text("기기 \(scan.devices.count)대")
+                        Text(verbatim: deviceCountTitle)
                         Spacer()
                         Picker("정렬", selection: $scan.sortOrder) {
                             ForEach(DeviceSort.allCases) { order in
@@ -83,12 +84,22 @@ struct HomeView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    isShowingHistory = true
+                } label: {
+                    Label("스캔 기록", systemImage: "clock.arrow.circlepath")
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     Task { await network.refresh() }
                 } label: {
                     Label("새로고침", systemImage: "arrow.clockwise")
                 }
                 .disabled(network.isRefreshing)
             }
+        }
+        .sheet(isPresented: $isShowingHistory) {
+            HistoryView()
         }
         .task {
             network.startMonitoring()
@@ -113,6 +124,13 @@ struct HomeView: View {
                 break
             }
         }
+    }
+}
+
+extension HomeView {
+    private var deviceCountTitle: String {
+        let count = "기기 \(scan.devices.count)대"
+        return scan.newDeviceCount > 0 ? "\(count) · 새 기기 \(scan.newDeviceCount)대" : count
     }
 }
 

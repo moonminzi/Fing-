@@ -2,10 +2,10 @@ import Foundation
 import NagoNetCore
 import Observation
 
-/// 스캔 버튼·진행률·기기 목록, 기기별 포트 스캔과 별명.
+/// 스캔 버튼·진행률·기기 목록, 기기별 포트 스캔과 별명, 스캔 기록과 "새 기기".
 ///
 /// 스캔 한 번 = TCP 탐색(ScannerService) + Bonjour 검색 + 기기별 이름 조회(역방향 DNS·mDNS 유니캐스트·NetBIOS)를
-/// 함께 돌려 주소별로 합치고, 끝으로 웹·SSH 포트가 열린 기기의 배너를 읽는다.
+/// 함께 돌려 주소별로 합치고, 끝으로 웹·SSH 포트가 열린 기기의 배너를 읽는다. 끝까지 마치면 기록에 남긴다.
 @MainActor @Observable
 final class ScanViewModel {
     enum Status: Equatable {
@@ -41,14 +41,21 @@ final class ScanViewModel {
     private(set) var isNaming = false
     var sortOrder: DeviceSort = .address
     private(set) var portScans: [IPv4: PortScanState] = [:]
+    /// 스캔을 시작할 때 꺼내 둔 이 네트워크의 기록. "새 기기"는 여기에 없는 기기
+    private(set) var baseline: NetworkBaseline = .empty
 
     @ObservationIgnored private let scanner: any NetworkScanning
     @ObservationIgnored private let bonjour: any BonjourBrowsing
     @ObservationIgnored private let naming: any DeviceNaming
     @ObservationIgnored private let bannerGrabber: any BannerGrabbing
     @ObservationIgnored private let portScanner: any PortScanning
-    @ObservationIgnored private let aliases: any AliasStoring
+    @ObservationIgnored private let history: any ScanHistoryStoring
+    /// 4단계에서 UserDefaults에 붙인 별명(읽기만, 다음 기록 때 SwiftData로 옮겨진다)
+    @ObservationIgnored private let legacyAliases: any AliasStoring
     @ObservationIgnored private let access: any LocalNetworkAccessChecking
+    /// 이번 스캔 중에 고친 별명(기록에는 바로 저장되지만 baseline은 스캔 시작 때 것이라 따로 든다)
+    @ObservationIgnored private var aliasEdits: [IPv4: String?] = [:]
+    @ObservationIgnored private var scannedNetwork: NetworkSnapshot?
     @ObservationIgnored private var portScanTasks: [IPv4: Task<Void, Never>] = [:]
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var scannedSubnet: Subnet?
@@ -61,7 +68,8 @@ final class ScanViewModel {
         naming: any DeviceNaming = NameResolver(dns: ReverseDNSResolver(timeout: .seconds(2)), transport: UDPExchange()),
         bannerGrabber: any BannerGrabbing = BannerGrabber(),
         portScanner: any PortScanning = PortScanner(prober: TCPProber()),
-        aliases: any AliasStoring = AliasStore(),
+        history: any ScanHistoryStoring,
+        legacyAliases: any AliasStoring = AliasStore(),
         access: any LocalNetworkAccessChecking = LocalNetworkAccess()
     ) {
         self.scanner = scanner
@@ -69,7 +77,8 @@ final class ScanViewModel {
         self.naming = naming
         self.bannerGrabber = bannerGrabber
         self.portScanner = portScanner
-        self.aliases = aliases
+        self.history = history
+        self.legacyAliases = legacyAliases
         self.access = access
     }
 
@@ -84,17 +93,38 @@ final class ScanViewModel {
         devices.values.sorted(by: sortOrder)
     }
 
+    /// 이전 스캔들에서 본 적 없는 기기인지(이 네트워크의 첫 스캔이면 모두 false)
+    func isNew(_ device: Device) -> Bool {
+        baseline.isNew(device)
+    }
+
+    var newDeviceCount: Int {
+        devices.values.filter(baseline.isNew).count
+    }
+
+    /// 이 네트워크를 처음 스캔하는 중(그래서 "새 기기"를 표시하지 않는다)
+    var isFirstScanOfNetwork: Bool {
+        scannedNetwork != nil && baseline.previousScans == 0
+    }
+
     func start(on network: NetworkSnapshot) {
         scanTask?.cancel()
         if scannedSubnet != network.subnet {
             devices = [:]
         }
         scannedSubnet = network.subnet
+        scannedNetwork = network
+        baseline = history.baseline(for: network)
+        aliasEdits = [:]
+        for address in devices.keys {
+            refreshAlias(of: address)
+        }
         progress = 0
         status = .checkingAccess
 
         scanTask = Task {
             let started = ContinuousClock.now
+            let startedAt = Date.now
             if devices[network.myAddress] == nil {
                 upsert(network.myAddress, network: network) { $0.isSelf = true }
             }
@@ -111,7 +141,11 @@ final class ScanViewModel {
                 if !denied { break }
             }
             guard !Task.isCancelled else { return }
-            status = .finished(at: .now, duration: started.duration(to: .now))
+            let duration = started.duration(to: .now)
+            status = .finished(at: .now, duration: duration)
+            let all = Array(devices.values)
+            history.record(all, new: Set(all.filter(baseline.isNew).map(\.address)),
+                           network: network, startedAt: startedAt, duration: duration)
         }
     }
 
@@ -132,6 +166,8 @@ final class ScanViewModel {
         progress = 0
         status = .idle
         scannedSubnet = nil
+        scannedNetwork = nil
+        baseline = .empty
     }
 
     /// 스캔과 포트 스캔을 모두 멈춘다(앱이 백그라운드로 갈 때).
@@ -144,20 +180,29 @@ final class ScanViewModel {
 
     // MARK: 별명
 
-    /// 별명을 붙인다. 빈 글이나 nil이면 지운다. 다음 스캔에서도 같은 기기에 붙는다.
+    /// 별명을 붙인다. 빈 글이나 nil이면 지운다. SwiftData에 저장돼 다음 스캔에서도 같은 기기에 붙는다.
     func setAlias(_ text: String?, for address: IPv4) {
-        guard let device = devices[address] else { return }
+        guard let device = devices[address], let network = scannedNetwork else { return }
         let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines)
         let alias = trimmed?.isEmpty == false ? trimmed : nil
-        aliases.setAlias(alias, forKeys: device.identity.keys(network: networkKey))
+        history.setAlias(alias, for: device, network: network)
+        legacyAliases.setAlias(nil, forKeys: device.identity.keys(network: legacyNetworkKey))
+        aliasEdits[address] = .some(alias)
         devices[address]?.alias = alias
     }
 
-    private var networkKey: String { scannedSubnet?.cidr ?? "" }
+    private var legacyNetworkKey: String { scannedSubnet?.cidr ?? "" }
 
+    /// 기기의 별명: 이번에 고친 것 → 기록(SwiftData) → 4단계의 UserDefaults
     private func refreshAlias(of address: IPv4) {
         guard let device = devices[address] else { return }
-        let alias = aliases.alias(forKeys: device.identity.keys(network: networkKey))
+        let alias: String?
+        if let edited = aliasEdits[address] {
+            alias = edited
+        } else {
+            alias = baseline.known(device.identity)?.alias
+                ?? legacyAliases.alias(forKeys: device.identity.keys(network: legacyNetworkKey))
+        }
         if device.alias != alias {
             devices[address]?.alias = alias
         }

@@ -103,6 +103,22 @@ struct DeviceAliasAndSortTests {
         #expect(router.name == "ipTIME A3004NS")
     }
 
+    @Test func vendorNameFromBanners() {
+        // 실기기에서 본 Aruba AP: 제목은 "302"(리디렉션), 인증서가 Aruba 로그인 포털
+        let redirect = "HTTP/1.1 302 Found\r\nLocation: https://securelogin.arubanetworks.com/cgi-bin/login\r\n\r\n<title>302</title>"
+        let http = ServiceBanner.http(port: 80, response: Array(redirect.utf8))
+        #expect(http?.title == nil)
+        #expect(http?.redirect == "https://securelogin.arubanetworks.com/cgi-bin/login")
+        #expect(http?.vendor == "Aruba")
+        let https = ServiceBanner.http(port: 443, response: Array("HTTP/1.1 302 Found\r\n\r\n".utf8),
+                                       certificate: "securelogin.arubanetworks.com")
+        let ap = device(ports: [22, 80, 443], banners: [http, https].compactMap { $0 })
+        #expect(ap.kind == .router)
+        #expect(ap.name == "Aruba AP")
+        #expect(device(ports: [80], banners: [ServiceBanner(port: 80, title: "Synology DiskStation")]).name == "Synology DiskStation")
+        #expect(device(ports: [80, 9100], banners: [ServiceBanner(port: 80, server: "HP HTTP Server")]).name == "HP 프린터")
+    }
+
     @Test func identityKeysPreferNamesOverIP() {
         let named = device(names: ("민지의 iPad", "Minji-iPad.local"))
         #expect(named.identity.keys(network: "192.168.10.0/23") == [
