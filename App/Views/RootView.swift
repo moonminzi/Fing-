@@ -14,7 +14,7 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 320, ideal: 380)
         } detail: {
             if let selection, let device = scan.devices[selection] {
-                DeviceDetailView(device: device)
+                DeviceDetailView(device: device, scan: scan)
             } else {
                 ContentUnavailableView(
                     "기기를 골라 주세요",

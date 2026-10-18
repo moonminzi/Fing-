@@ -98,7 +98,7 @@ struct LocalNetworkDeniedView: View {
     }
 }
 
-/// 목록 한 줄: 종류 아이콘, 이름(없으면 IP), IP·서비스나 열린 포트, 응답 시간.
+/// 목록 한 줄: 종류 아이콘, 이름(없으면 IP), IP·종류·서비스나 열린 포트, 응답 시간.
 struct DeviceRow: View {
     let device: Device
 
@@ -136,12 +136,18 @@ struct DeviceRow: View {
     private var subtitle: String {
         var parts: [String] = []
         if device.name != nil { parts.append(device.address.description) }
+        if device.isSelf, let bonjourName = device.bonjourName {
+            parts.append(bonjourName)
+            return parts.joined(separator: " · ")
+        }
+        let kind = device.kind
+        if kind != .unknown { parts.append(kind.title) }
         let serviceTitles = device.services.map(\.typeTitle).uniqued()
         if !serviceTitles.isEmpty {
             parts += serviceTitles.prefix(2)
         } else if !device.openPorts.isEmpty {
-            parts += device.openPorts.prefix(3).map { KnownPorts.name(for: $0) ?? "\($0)" }
-        } else if !device.isSelf, device.name == nil {
+            parts += device.allOpenPorts.prefix(3).map { KnownPorts.name(for: $0) ?? "\($0)" }
+        } else if device.name == nil, kind == .unknown {
             parts.append("응답함 · 열린 포트 없음")
         }
         return parts.joined(separator: " · ")
@@ -156,43 +162,96 @@ private extension Array where Element: Hashable {
     }
 }
 
-struct DeviceIcon: View {
-    let device: Device
-
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(tint)
-            .frame(width: 36, height: 36)
-            .background(tint.opacity(0.15), in: Circle())
-            .accessibilityHidden(true)
+extension DeviceKind {
+    var symbol: String {
+        switch self {
+        case .router: "wifi.router"
+        case .iPhone: "iphone"
+        case .phone: "iphone.gen2"
+        case .tablet: "ipad"
+        case .mac: "laptopcomputer"
+        case .computer: "desktopcomputer"
+        case .tv: "tv"
+        case .speaker: "hifispeaker"
+        case .printer: "printer"
+        case .nas: "externaldrive"
+        case .unknown: "questionmark"
+        }
     }
 
-    private var symbol: String {
-        if device.isSelf { return UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone" }
-        if device.isGateway { return "wifi.router" }
-        return "questionmark"
-    }
-
-    private var tint: Color {
-        if device.isSelf { return .blue }
-        if device.isGateway { return .green }
-        return .gray
+    var tint: Color {
+        switch self {
+        case .router: .green
+        case .iPhone: .blue
+        case .phone: .teal
+        case .tablet: .indigo
+        case .mac: .cyan
+        case .computer: .mint
+        case .tv: .purple
+        case .speaker: .pink
+        case .printer: .orange
+        case .nas: .brown
+        case .unknown: .gray
+        }
     }
 }
 
-/// 기기 상세: 주소·이름·Bonjour 서비스·열린 포트(종류 추정과 포트 스캔은 다음 단계).
-struct DeviceDetailView: View {
+struct DeviceIcon: View {
     let device: Device
+    var size: CGFloat = 36
 
     var body: some View {
+        let kind = device.kind
+        Image(systemName: kind.symbol)
+            .font(.system(size: size * 0.47, weight: .semibold))
+            .foregroundStyle(kind.tint)
+            .frame(width: size, height: size)
+            .background(kind.tint.opacity(0.15), in: Circle())
+            .overlay(alignment: .bottomTrailing) {
+                if device.isSelf {
+                    Circle()
+                        .fill(.blue)
+                        .frame(width: size * 0.3, height: size * 0.3)
+                        .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                }
+            }
+            .accessibilityLabel(kind.title)
+    }
+}
+
+/// 기기 상세: 종류와 근거, 별명, 이름 출처, 기기 정보(모델·배너), Bonjour 서비스, 포트 스캔.
+struct DeviceDetailView: View {
+    let device: Device
+    let scan: ScanViewModel
+
+    @State private var isEditingAlias = false
+    @State private var aliasDraft = ""
+
+    var body: some View {
+        let classification = device.classification
         List {
             Section {
                 HStack(spacing: 14) {
-                    DeviceIcon(device: device)
-                    Text(device.name ?? device.address.description)
-                        .font(.title3.weight(.semibold))
+                    DeviceIcon(device: device, size: 52)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(device.name ?? device.address.description)
+                            .font(.title3.weight(.semibold))
+                        Text(verbatim: classification.kind == .unknown ? "종류를 알 수 없음" : "\(classification.kind.title)(추정)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
                 }
+                .padding(.vertical, 4)
+                Button {
+                    aliasDraft = device.alias ?? ""
+                    isEditingAlias = true
+                } label: {
+                    Label(device.alias == nil ? "별명 붙이기" : "별명 바꾸기", systemImage: "pencil")
+                }
+            }
+
+            Section("기본 정보") {
                 LabeledContent("IP 주소", value: device.address.description)
                 if device.isBonjourOnly {
                     LabeledContent("응답 시간", value: "TCP 응답 없음(Bonjour로 찾음)")
@@ -202,6 +261,25 @@ struct DeviceDetailView: View {
                 if device.isGateway {
                     LabeledContent("역할", value: "공유기(게이트웨이)")
                 }
+                if let alias = device.alias {
+                    LabeledContent("별명", value: alias)
+                    LabeledContent("찾은 이름", value: device.discoveredName ?? "없음")
+                }
+            }
+
+            Section {
+                if classification.reasons.isEmpty {
+                    Text("단서가 없어요. 아래 포트 스캔을 하면 더 알 수 있을지도 몰라요.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(classification.reasons, id: \.self) { reason in
+                        Label(reason, systemImage: "checkmark.circle")
+                    }
+                }
+            } header: {
+                Text("종류 추정 근거")
+            } footer: {
+                Text("iOS에서는 다른 기기의 MAC 주소(제조사)를 읽을 수 없어서 이름·서비스·열린 포트·배너로 짐작해요.")
             }
 
             Section {
@@ -212,8 +290,19 @@ struct DeviceDetailView: View {
             } header: {
                 Text("이름")
             } footer: {
-                if device.needsNames {
-                    Text("Bonjour 광고도, 직접 물어본 mDNS·NetBIOS 답도, 공유기 DNS 이름도 없는 기기예요. 안드로이드 폰이나 IoT 기기가 흔히 그래요.")
+                if device.needsNames && device.productName == nil {
+                    Text("Bonjour 광고도, 직접 물어본 mDNS·NetBIOS 답도, 공유기 DNS 이름도 없는 기기예요. 안드로이드 폰이나 IoT 기기가 흔히 그래요. 별명을 붙여 두면 다음 스캔에도 그 이름으로 보여요.")
+                }
+            }
+
+            if device.model != nil || !device.banners.isEmpty {
+                Section("기기 정보") {
+                    if let model = device.model {
+                        LabeledContent("모델", value: model)
+                    }
+                    ForEach(device.banners, id: \.port) { banner in
+                        BannerRows(banner: banner)
+                    }
                 }
             }
 
@@ -230,9 +319,6 @@ struct DeviceDetailView: View {
                             }
                             Text(service.name).font(.subheadline)
                             Text(service.type).font(.caption).foregroundStyle(.secondary)
-                            if let model = service.txt["model"] ?? service.txt["md"] ?? service.txt["am"] ?? service.txt["ty"] {
-                                Text("모델: \(model)").font(.caption).foregroundStyle(.secondary)
-                            }
                         }
                         .padding(.vertical, 2)
                     }
@@ -240,27 +326,110 @@ struct DeviceDetailView: View {
             }
 
             if !device.isSelf {
-                Section {
-                    if device.openPorts.isEmpty {
-                        Text(device.isBonjourOnly
-                             ? "TCP 탐색 포트에는 답하지 않았어요."
-                             : "열린 포트가 없지만 연결 거부(RST)로 응답해서 기기가 있는 걸 알았어요.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(device.openPorts, id: \.self) { port in
-                            LabeledContent(String(port), value: KnownPorts.name(for: port) ?? "")
-                        }
-                    }
-                } header: {
-                    Text("열린 포트")
-                } footer: {
-                    Text("기기를 찾을 때 확인한 포트 \(ScanConfiguration.discoveryPorts.count)개 기준이에요.")
-                }
+                PortsSection(device: device, scan: scan)
             }
         }
         .monospacedDigit()
         .textSelection(.enabled)
         .navigationTitle(device.name ?? device.address.description)
         .navigationBarTitleDisplayMode(.inline)
+        .alert("별명", isPresented: $isEditingAlias) {
+            TextField(device.discoveredName ?? device.address.description, text: $aliasDraft)
+            Button("저장") { scan.setAlias(aliasDraft, for: device.address) }
+            if device.alias != nil {
+                Button("별명 지우기", role: .destructive) { scan.setAlias(nil, for: device.address) }
+            }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("목록과 상세에 이 이름으로 보이고, 다음 스캔에서도 같은 기기에 붙어요.")
+        }
+    }
+}
+
+private struct BannerRows: View {
+    let banner: ServiceBanner
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("포트 \(String(banner.port)) · \(KnownPorts.name(for: banner.port) ?? "")")
+                .font(.subheadline.weight(.semibold))
+            ForEach(lines, id: \.label) { line in
+                HStack(alignment: .firstTextBaseline) {
+                    Text(line.label).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(line.value).multilineTextAlignment(.trailing)
+                }
+                .font(.caption)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private struct Line {
+        let label: String
+        let value: String
+    }
+
+    private var lines: [Line] {
+        let candidates: [(String, String?)] = [
+            ("웹 페이지 제목", banner.title), ("인증 영역", banner.realm), ("인증서", banner.certificate),
+            ("서버", banner.server), ("SSH", banner.ssh),
+        ]
+        return candidates.compactMap { candidate in candidate.1.map { Line(label: candidate.0, value: $0) } }
+    }
+}
+
+/// 열린 포트 목록과 "주요 포트 100개 스캔" 버튼.
+private struct PortsSection: View {
+    let device: Device
+    let scan: ScanViewModel
+
+    var body: some View {
+        let state = scan.portScans[device.address]
+        Section {
+            if let state, state.isRunning {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("주요 포트 \(KnownPorts.common.count)개 확인 중…")
+                        Spacer()
+                        Button("중지", role: .destructive) { scan.cancelPortScan(of: device.address) }
+                            .buttonStyle(.borderless)
+                    }
+                    ProgressView(value: state.progress)
+                    Text("\(state.progress.formatted(.percent.precision(.fractionLength(0)))) · 열린 포트 \(state.found.count)개")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Button {
+                    scan.scanPorts(of: device.address)
+                } label: {
+                    Label(device.scannedPorts == nil ? "포트 스캔(주요 \(KnownPorts.common.count)개)" : "포트 다시 스캔",
+                          systemImage: "magnifyingglass")
+                }
+            }
+            if state?.isDenied == true {
+                Text("로컬 네트워크 권한이 없어 포트를 확인하지 못했어요.")
+                    .foregroundStyle(.orange)
+            }
+
+            let ports = state?.isRunning == true ? Array(Set(device.allOpenPorts + (state?.found ?? []))).sorted() : device.allOpenPorts
+            if ports.isEmpty {
+                Text(device.isBonjourOnly ? "TCP로 확인한 열린 포트가 없어요." : "열린 포트가 없어요(연결 거부로 응답해 기기가 있는 걸 알았어요).")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(ports, id: \.self) { port in
+                    LabeledContent(String(port), value: KnownPorts.name(for: port) ?? "")
+                }
+            }
+        } header: {
+            Text("열린 포트")
+        } footer: {
+            if let scanned = device.scannedPorts {
+                Text("주요 포트 \(KnownPorts.common.count)개를 확인했어요. 열린 포트 \(scanned.count)개.")
+            } else {
+                Text("지금은 기기를 찾을 때 확인한 포트 \(ScanConfiguration.discoveryPorts.count)개 기준이에요.")
+            }
+        }
     }
 }

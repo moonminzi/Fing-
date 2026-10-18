@@ -10,7 +10,7 @@ Swift 6 · SwiftUI · Swift Concurrency · Network 프레임워크 · SwiftData,
 | 1 | 내 네트워크 정보(SSID·내 IP·서브넷·게이트웨이)와 스캔 대역 계산 | ✅ |
 | 2 | TCP 연결로 기기 탐색, 진행률·취소, 기기 목록, 로컬 네트워크 권한 거부 안내 | ✅ |
 | 3 | Bonjour(NWBrowser)와 역방향 DNS로 기기 이름 찾기 | ✅ |
-| 4 | 기기 종류 추정, 상세 화면, 포트 100개 스캔, 별명 | |
+| 4 | 기기 종류 추정, 상세 화면, 포트 100개 스캔, 별명 | ✅ |
 | 5 | SwiftData로 네트워크별 기록, "새 기기" 배지 | |
 
 ## 구조
@@ -28,11 +28,15 @@ Core/                       NagoNetCore: UI·Network 프레임워크 없음 → 
   Bonjour.swift             Bonjour 서비스·이름 고르기·호스트 이름 다듬기, BonjourBrowsing·HostNameResolving 프로토콜
   ReverseDNS.swift          getnameinfo 역방향 DNS(시간 제한·취소)
   DNSMessage.swift          DNS 메시지 만들기·읽기(압축 포인터), NetBIOS 이름 상태 질의
-  NameResolver.swift        기기별 이름 조회: 역방향 DNS + mDNS 유니캐스트 + NetBIOS
+  NameResolver.swift        기기별 이름 조회: 역방향 DNS + mDNS 유니캐스트(+ TXT·_device-info 모델) + NetBIOS
+  ServiceBanner.swift       HTTP 머리·제목·인증 영역, HTTPS 인증서, SSH 첫 줄 해석, BannerGrabbing 프로토콜
+  DeviceClassifier.swift    DeviceKind, 점수로 종류 추정(DeviceClassifying 프로토콜)
+  PortScanner.swift         주요 포트 100개 스캔(PortScanning 프로토콜)
+  KnownPorts.swift          포트 100개와 서비스 이름
 App/                        NagoNet 앱
   Services/                 SystemNetworkInfo(SSID: NEHotspotNetwork), WiFiPathMonitor, LocationPermission,
                             TCPProber(NWConnection), LocalNetworkAccess(권한 확인), BonjourBrowser(NWBrowser),
-                            UDPExchange(NWConnection UDP)
+                            UDPExchange(NWConnection UDP), BannerGrabber(TCP/TLS), AliasStore(UserDefaults)
   ViewModels/               @Observable 뷰모델
   Views/                    SwiftUI 화면
 ```
@@ -91,6 +95,33 @@ TCP 탐색과 함께 두 가지를 동시에 돌려 주소별로 합친다(`Scan
   - Bonjour는 사용자가 붙인 이름이 그대로 든 서비스 먼저: Google Cast(TXT의 `fn`) → Apple 기기(companion-link) →
     AirPlay → AirPlay 오디오(`MAC@이름`에서 이름만) → HomeKit → 프린터 → Spotify → SMB → SSH → 웹
   - DNS 이름은 `.lan`·`.local` 같은 꼬리를 떼고, `192-168-0-7`처럼 IP를 그대로 쓴 이름은 버린다.
+
+### 기기 종류를 어떻게 짐작하나
+
+iOS는 다른 기기의 MAC 주소(제조사)를 읽을 수 없어서, 모은 단서에 점수를 매겨 고른다(`DeviceClassifier`).
+상세 화면에 근거가 그대로 나온다.
+
+| 단서 | 점수 | 예 |
+| --- | --- | --- |
+| 기본 게이트웨이 | 100 | 공유기 |
+| 모델 식별자 | 90 | mDNS로 물은 `_device-info` TXT `model=iPad13,1`, AirPlay `model`, companion-link `rpMd`, Cast `md`, 프린터 `ty` |
+| Bonjour 서비스 | 20~70 | `_ipp` → 프린터, `_googlecast` → TV(Home/Nest면 스피커), `_raop`만 → 스피커 |
+| 배너 | 45 | 웹 제목·인증 영역·HTTPS 인증서·Server·SSH에 `UniFi`·`ipTIME`·`LaserJet`·`DiskStation`·`Ubuntu`·`dropbear`… |
+| NetBIOS 이름 | 45 | 컴퓨터 |
+| 이름 | 40 | `iPad`, `iPhone`, `MacBook`, `Galaxy-Tab`, `DESKTOP-…`, `TV` … |
+| 열린 포트 | 20~50 | 62078 → iPhone·iPad, 631·9100 → 프린터, 3389 → 컴퓨터, 5000·5001 → NAS, 8009 → TV |
+
+가장 높은 종류가 20점 미만이면 "알 수 없음". 종류: 공유기·AP, iPhone, 휴대폰, 태블릿, Mac, 컴퓨터, TV, 스피커, 프린터, NAS, 알 수 없음.
+
+**배너**: 스캔 끝에 웹·SSH 포트가 열린 기기에 직접 연결해 읽는다(기기 8대씩, 2.5초 제한).
+HTTP는 `GET /`의 `Server`·`WWW-Authenticate realm`·`<title>`, HTTPS는 자체 서명 인증서를 받아들이고 인증서 이름까지,
+SSH는 첫 줄. 로그인·오류 같은 흔한 제목은 이름으로 쓰지 않는다. 이름이 없는 공유기·AP·프린터·NAS가 제품명으로 보인다.
+
+**별명**: 상세 화면에서 붙인다. `Bonjour 이름 → 호스트 이름 → (네트워크별) IP` 열쇠로 UserDefaults에 두어
+다음 스캔에서도 같은 기기에 붙는다(5단계에서 SwiftData로 옮긴다).
+
+**포트 스캔**: 상세 화면의 버튼으로 주요 포트 100개(`KnownPorts`)를 동시 20개, 1초 제한으로 두드린다.
+끝나면 새로 찾은 웹·SSH 포트의 배너도 읽고 종류를 다시 짐작한다.
 
 ## iOS에서 하지 않는 것
 
@@ -172,3 +203,16 @@ swift test --package-path Core
 4. 2단계에서 빠졌던 기기(방화벽을 켠 맥 등)가 오른쪽에 "Bonjour"라고 표시되며 새로 잡히는지 본다.
 5. **이름순** 정렬로 바꾸면 이름 있는 기기가 가나다순으로 먼저, 이름 없는 기기는 뒤에 IP순으로 나온다.
 6. VPN을 켠 채로도 이름이 똑같이 나오는지 본다(Bonjour 검색과 주소 풀기도 Wi-Fi로 고정).
+
+### 4단계: 종류 추정, 상세 화면, 포트 스캔, 별명
+
+1. **다시 스캔**. 목록 아이콘이 종류별로 바뀐다(iPad·iPhone·공유기·AP·프린터… 모르면 ?).
+   진행 막대가 끝난 뒤 "기기 이름 찾는 중…"이 조금 더 길어진다(웹·SSH 배너를 읽는 시간).
+2. `192.168.10.10~15`처럼 SSH·HTTP·HTTPS가 열린 기기가 **공유기·AP**로 바뀌고, 웹 제목·인증서에 제품명이 있으면 그 이름으로 보이는지 본다.
+   상세의 **기기 정보**에 웹 페이지 제목·인증서·서버·SSH 버전이 나온다.
+3. 이름이 "동혁pad"처럼 iPad라는 말이 없는 기기도 **모델 iPad…**로 태블릿이 되는지, 상세의 **종류 추정 근거**를 본다.
+4. 목록 위 정렬 메뉴에서 **종류별**: 공유기·AP → iPhone → … → 알 수 없음 순.
+5. 상세에서 **포트 스캔(주요 100개)** → 진행률과 열린 포트가 차례로 뜨고, 끝나면 푸터에 "주요 포트 100개를 확인했어요".
+   중지 버튼도 확인. 프린터(631·9100)나 NAS(5000·5001)는 포트 스캔 뒤 종류가 더 정확해진다.
+6. 이름 없는 기기에 **별명 붙이기** → 목록에 바로 반영. **다시 스캔**해도 그대로 붙어 있는지,
+   앱을 껐다 켜고 스캔해도 남아 있는지 본다. **별명 지우기**로 원래 이름으로.

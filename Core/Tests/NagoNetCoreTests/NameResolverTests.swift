@@ -126,9 +126,15 @@ struct NameResolverTests {
         let reverse = DNSMessage.reverseName(for: ip)
         transport.replies[5353] = { query in
             var reply = ReplyBuilder(id: queryID(query))
-            if query.count < 60 {
+            let questions = Int(query[5])
+            let firstType = query.count >= 4 ? UInt16(query[query.count - 4]) << 8 | UInt16(query[query.count - 3]) : 0
+            if questions == 1, firstType == DNSMessage.RecordType.ptr {
                 // 역방향 PTR 질의
                 reply.add(name: DNSMessage.encode(name: reverse), type: 12, data: DNSMessage.encode(name: "Minjis-iPhone.local"))
+            } else if firstType == DNSMessage.RecordType.txt {
+                // 두 번째 질의: TXT·_device-info
+                reply.add(name: DNSMessage.encode(name: "Living Room._device-info._tcp.local"), type: 16,
+                          data: [15] + Array("model=iPad13,18".utf8))
             } else {
                 reply.add(name: DNSMessage.encode(name: "_airplay._tcp.local"), type: 12,
                           data: DNSMessage.encode(name: "Living Room._airplay._tcp.local"))
@@ -150,6 +156,7 @@ struct NameResolverTests {
         #expect(names.services == [
             BonjourService(name: "Living Room", type: "_airplay._tcp", address: ip, port: 7000, txt: ["model": "AppleTV14,1"]),
         ])
+        #expect(names.model == "iPad13,18")
 
         var device = Device(address: ip, responseTime: .milliseconds(9))
         device.merge(names)

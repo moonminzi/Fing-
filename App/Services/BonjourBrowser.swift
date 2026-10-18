@@ -77,7 +77,8 @@ private final class BrowseSession: @unchecked Sendable {
 
         let txt: [String: String]
         if case .bonjour(let record) = result.metadata {
-            txt = record.dictionary
+            // 키는 대소문자를 가리지 않으므로 소문자로 맞춘다(rpMd → rpmd)
+            txt = Dictionary(record.dictionary.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { first, _ in first })
         } else {
             txt = [:]
         }

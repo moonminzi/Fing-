@@ -1,6 +1,6 @@
 import Foundation
 
-/// 목록에 보이는 기기 하나. 이름은 Bonjour·역방향 DNS에서, 4단계부터 종류가 붙는다.
+/// 목록에 보이는 기기 하나.
 public struct Device: Hashable, Sendable, Identifiable {
     public let address: IPv4
     /// 가장 빠른 TCP 답까지 걸린 시간. 이 기기 자신이나 Bonjour로만 찾은 기기는 nil
@@ -9,6 +9,8 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var openPorts: [UInt16]
     public var isSelf: Bool
     public var isGateway: Bool
+    /// 사용자가 붙인 별명
+    public var alias: String?
     /// 이 주소로 풀린 Bonjour 서비스(종류·이름 순)
     public var services: [BonjourService] = []
     /// 역방향 DNS 이름(공유기가 알려 준 그대로)
@@ -17,6 +19,12 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var mdnsName: String?
     /// NetBIOS 컴퓨터 이름(윈도우·삼바)
     public var netbiosName: String?
+    /// 애플 기기가 `_device-info`로 알려 준 모델 식별자("iPad13,1")
+    public var deviceInfoModel: String?
+    /// 열린 포트에서 읽은 배너(포트 순)
+    public var banners: [ServiceBanner] = []
+    /// 상세 화면의 포트 스캔(주요 포트 100개)에서 찾은 열린 포트. 아직 안 했으면 nil
+    public var scannedPorts: [UInt16]?
 
     public init(
         address: IPv4,
@@ -34,10 +42,19 @@ public struct Device: Hashable, Sendable, Identifiable {
 
     public var id: IPv4 { address }
 
-    /// 사람이 읽을 이름. Bonjour 이름 → 호스트 이름(mDNS → NetBIOS → DNS) → "공유기" 순. 모르면 nil(화면에는 IP)
+    /// 사람이 읽을 이름. 별명 → Bonjour 이름 → 호스트 이름(mDNS → NetBIOS → DNS) → 배너의 제품명 → "공유기" 순.
+    /// 모르면 nil(화면에는 IP)
     public var name: String? {
+        if let alias { return alias }
         if isSelf { return "이 기기" }
-        return bonjourName ?? displayHostName ?? (isGateway ? "공유기" : nil)
+        return bonjourName ?? displayHostName ?? productName ?? (isGateway ? "공유기" : nil)
+    }
+
+    /// 별명을 빼고 기기에서 찾은 이름(별명을 고칠 때 원래 이름으로 보여 준다)
+    public var discoveredName: String? {
+        var copy = self
+        copy.alias = nil
+        return copy.name
     }
 
     /// Bonjour 서비스에서 고른 이름
@@ -51,6 +68,33 @@ public struct Device: Hashable, Sendable, Identifiable {
             .compactMap { $0.flatMap { HostName.display($0, for: self.address) } }
             .first
     }
+
+    /// 웹 페이지 제목·인증 영역·인증서에서 읽은 제품명("UniFi", "ipTIME A3004NS")
+    public var productName: String? {
+        banners.lazy.compactMap(\.productName).first
+    }
+
+    /// 모델 식별자: `_device-info` → 서비스 TXT(model·rpMd·am·md·ty)
+    public var model: String? {
+        if let deviceInfoModel { return deviceInfoModel }
+        for key in ["model", "rpmd", "am", "md", "ty"] {
+            if let value = services.lazy.compactMap({ $0.txt[key] }).first(where: { !$0.isEmpty }) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    /// 탐색 포트 + 포트 스캔에서 찾은 열린 포트
+    public var allOpenPorts: [UInt16] {
+        Array(Set(openPorts + (scannedPorts ?? []))).sorted()
+    }
+
+    public var classification: DeviceClassification {
+        DeviceClassifier().classify(self)
+    }
+
+    public var kind: DeviceKind { classification.kind }
 
     /// 아직 이름을 하나도 못 찾았는지(다시 스캔할 때 다시 묻는다)
     public var needsNames: Bool {
@@ -73,6 +117,7 @@ public struct Device: Hashable, Sendable, Identifiable {
         hostName = names.dnsName ?? hostName
         mdnsName = names.mdnsName ?? mdnsName
         netbiosName = names.netbiosName ?? netbiosName
+        deviceInfoModel = names.model ?? deviceInfoModel
         names.services.forEach { merge($0) }
     }
 
@@ -82,11 +127,19 @@ public struct Device: Hashable, Sendable, Identifiable {
         services.append(service)
         services.sort { ($0.typeTitle, $0.name) < ($1.typeTitle, $1.name) }
     }
+
+    /// 배너를 더한다. 같은 포트면 바꾼다.
+    public mutating func merge(_ banner: ServiceBanner) {
+        banners.removeAll { $0.port == banner.port }
+        banners.append(banner)
+        banners.sort { $0.port < $1.port }
+    }
 }
 
 public enum DeviceSort: String, CaseIterable, Sendable, Identifiable {
     case address
     case name
+    case kind
 
     public var id: Self { self }
 
@@ -94,31 +147,78 @@ public enum DeviceSort: String, CaseIterable, Sendable, Identifiable {
         switch self {
         case .address: "IP순"
         case .name: "이름순"
+        case .kind: "종류별"
         }
     }
 }
 
 extension Sequence where Element == Device {
     /// IP순: 숫자 크기대로. 이름순: 이름 있는 기기를 먼저 가나다순으로, 이름 없는 기기는 뒤에 IP순으로.
+    /// 종류별: 공유기 → iPhone → … → 알 수 없음, 같은 종류 안에서는 이름순.
     public func sorted(by order: DeviceSort) -> [Device] {
         switch order {
         case .address:
             return sorted { $0.address < $1.address }
         case .name:
-            return sorted { lhs, rhs in
-                switch (lhs.name, rhs.name) {
-                case let (left?, right?) where left != right:
-                    return left.localizedStandardCompare(right) == .orderedAscending
-                case (.some, nil):
-                    return true
-                case (nil, .some):
-                    return false
-                default:
-                    return lhs.address < rhs.address
-                }
-            }
+            return sorted(by: Self.byName)
+        case .kind:
+            let kinds = DeviceKind.allCases
+            return map { ($0, kinds.firstIndex(of: $0.kind) ?? kinds.count) }
+                .sorted { $0.1 != $1.1 ? $0.1 < $1.1 : Self.byName($0.0, $1.0) }
+                .map(\.0)
         }
     }
+
+    private static func byName(_ lhs: Device, _ rhs: Device) -> Bool {
+        switch (lhs.name, rhs.name) {
+        case let (left?, right?) where left != right:
+            return left.localizedStandardCompare(right) == .orderedAscending
+        case (.some, nil):
+            return true
+        case (nil, .some):
+            return false
+        default:
+            return lhs.address < rhs.address
+        }
+    }
+}
+
+/// 기기를 다시 알아보는 데 쓰는 것: IP, 호스트 이름, Bonjour 이름.
+///
+/// IP는 DHCP가 바꿀 수 있어서, 이름이 있으면 이름을 먼저 믿는다.
+public struct DeviceIdentity: Hashable, Sendable, Codable {
+    public let address: IPv4
+    public let hostName: String?
+    public let bonjourName: String?
+
+    public init(address: IPv4, hostName: String?, bonjourName: String?) {
+        self.address = address
+        self.hostName = hostName
+        self.bonjourName = bonjourName
+    }
+
+    /// 믿을 만한 순서의 열쇠들. IP 열쇠는 네트워크마다 다른 기기일 수 있어 `network`로 구분한다.
+    public func keys(network: String) -> [String] {
+        [
+            bonjourName.map { "bonjour:\($0.lowercased())" },
+            hostName.map { "host:\($0.lowercased())" },
+            "ip:\(network)/\(address)",
+        ].compactMap { $0 }
+    }
+}
+
+extension Device {
+    public var identity: DeviceIdentity {
+        DeviceIdentity(address: address, hostName: displayHostName, bonjourName: bonjourName)
+    }
+}
+
+/// 기기 별명 보관. 앱은 UserDefaults(5단계에서 SwiftData), 시험은 메모리.
+public protocol AliasStoring: Sendable {
+    /// 열쇠들 중 처음 걸리는 별명
+    func alias(forKeys keys: [String]) -> String?
+    /// 별명을 저장한다(nil이면 지운다). 같은 기기의 다른 열쇠에 남은 옛 별명도 지운다
+    func setAlias(_ alias: String?, forKeys keys: [String])
 }
 
 extension NetworkSnapshot {

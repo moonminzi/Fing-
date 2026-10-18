@@ -2,7 +2,7 @@
 ///
 /// Network 프레임워크의 `IPv4Address`와 이름이 겹치지 않게 `IPv4`라고 했다.
 /// `Strideable`이라서 `a...b`가 그대로 주소 목록(Collection)이 된다.
-public struct IPv4: Hashable, Sendable, Strideable {
+public struct IPv4: Hashable, Sendable, Strideable, Codable {
     public var value: UInt32
 
     public init(_ value: UInt32) {

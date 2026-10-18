@@ -108,7 +108,7 @@ struct HomeView: View {
                 Task { await network.refresh() }
             case .background:
                 // 백그라운드에서는 스캔하지 않는다
-                scan.cancel()
+                scan.stopEverything()
             default:
                 break
             }
