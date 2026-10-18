@@ -53,6 +53,7 @@ final class ScanViewModel {
     @ObservationIgnored private let naming: any DeviceNaming
     @ObservationIgnored private let arpReader: ARPTableReader
     @ObservationIgnored private let vendorLookup: (MACAddress) -> String?
+    @ObservationIgnored private let wakeSender = MagicPacketSender()
     /// 앱이 백그라운드로 간 뒤 진행 중인 스캔을 마무리하는 시간(약 30초)
     @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored private let bannerGrabber: any BannerGrabbing
@@ -124,6 +125,13 @@ final class ScanViewModel {
     /// 상세 화면의 핑 도구용(Wi-Fi 인터페이스로 묶는다)
     var pinger: any Pinging {
         ICMPPinger(interfaceName: scannedNetwork?.interfaceName)
+    }
+
+    /// 기기를 깨운다(Wake-on-LAN 매직 패킷). MAC을 모르면 보내지 않고 false.
+    /// 보냈으면 true(기기가 실제로 켜졌는지는 알 수 없다).
+    func wake(_ device: Device) async -> Bool {
+        guard let mac = device.mac?.address else { return false }
+        return await wakeSender.wake(mac: mac, lastKnownIP: device.address, broadcast: scannedNetwork?.subnet.broadcast)
     }
 
     /// 지금 목록을 CSV로 내보내기. 기기가 없으면 nil

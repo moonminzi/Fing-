@@ -14,6 +14,7 @@ Swift 6 · SwiftUI · Swift Concurrency · Network 프레임워크 · SwiftData,
 | 5 | SwiftData로 네트워크별 기록, "새 기기" 배지 | ✅ |
 | + | 네트워크 레이더, 핑(ICMP) 도구·핑으로 찾기, 웹 관리 페이지 열기, CSV 내보내기, 앱 아이콘 | ✅ |
 | + | SSDP 유니캐스트(UPnP), MAC 주소·제조사(NetBIOS·AirPlay·공유기 SNMP), 백그라운드 마무리·새 기기 알림 | ✅ |
+| + | 기기 깨우기(Wake-on-LAN) — 상세·기록에서 매직 패킷 보내기 | ✅ |
 
 ## 구조
 
@@ -42,6 +43,7 @@ Core/                       NagoNetCore: UI·Network 프레임워크 없음 → 
   SSDP.swift                SSDP 유니캐스트 검색·UPnP 설명 XML 해석, HTTPFetching 프로토콜
   SNMP.swift                SNMPv2c(BER) GetBulk, 공유기 ARP 표 읽기(ARPTableReader)
   Export.swift              CSV 내보내기, 레이더 배치(RadarLayout)
+  WakeOnLAN.swift           Wake-on-LAN 매직 패킷
 App/                        NagoNet 앱
   Services/                 SystemNetworkInfo(SSID: NEHotspotNetwork), WiFiPathMonitor, LocationPermission,
                             TCPProber(NWConnection), LocalNetworkAccess(권한 확인), BonjourBrowser(NWBrowser),
@@ -186,6 +188,14 @@ iPad는 기기를 고르지 않았을 때 오른쪽 칸 전체가, iPhone은 툴
 | raw 소켓 ICMP | 그대로 안 씀(root 필요). 핑은 SOCK_DGRAM ICMP로 한다 |
 | SSDP/UPnP 멀티캐스트(entitlement 필요) | **유니캐스트 SSDP**(UPnP 1.1): 기기 주소의 1900 포트로 직접 `M-SEARCH`를 보내고, 답의 LOCATION(그 기기 주소일 때만)에서 설명 XML을 읽어 이름(friendlyName)·제조사·모델·기기 종류를 얻는다. 멀티캐스트가 아니라 entitlement가 필요 없다 |
 | 백그라운드 상시 스캔 | ① 스캔 중에 앱을 나가면 iOS가 주는 약 30초 동안 마저 스캔(`beginBackgroundTask`), 시간이 다 되면 멈춤 ② 설정의 **새 기기 알림**을 켜면 `BGAppRefreshTask`로 iOS가 가끔(보통 몇 시간에 한 번) 깨워 줄 때 포트 하나로 빠르게 훑고, 기록에 없는 주소만 이름을 물어 다시 확인한 뒤 처음 보는 기기를 알림. 한 번 알린 기기는 다음 앱 스캔이 기록될 때까지 다시 알리지 않는다. 실시간 감시는 iOS에서 할 수 없다 |
+
+### 기기 깨우기 (Wake-on-LAN)
+
+MAC을 아는 기기는 상세 화면의 **제어 → 깨우기**, 또는 스캔 기록에서 기기를 **왼쪽으로 밀어** 깨울 수 있다
+(꺼져 있어 지금 스캔엔 안 보이는 기기도 기록에 MAC이 있으면 깨울 수 있다). 매직 패킷(0xFF×6 + MAC×16)을
+UDP 포트 9·7로, 마지막으로 본 IP와 서브넷 브로드캐스트(x.x.x.255)로 보낸다. 브로드캐스트는 iOS가 막을 수 있어
+(멀티캐스트 entitlement 필요) 완전히 꺼진 기기는 못 깨울 수 있고, 잠자기 중이거나 공유기가 IP↔MAC을 기억하는
+기기는 깨어난다. 대상 기기에서 Wake-on-LAN(원격 깨우기)이 켜져 있어야 한다.
 
 멀티캐스트 entitlement(`com.apple.developer.networking.multicast`)는 유료 개발자 계정으로 Apple에 신청해 승인받으면 쓸 수 있다.
 승인받으면 SSDP·mDNS를 멀티캐스트로도 보낼 수 있지만, 지금 방식만으로도 대부분의 기기는 답한다.

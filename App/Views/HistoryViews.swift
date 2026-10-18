@@ -2,6 +2,9 @@ import NagoNetCore
 import SwiftData
 import SwiftUI
 
+/// 기록의 기기를 Wake-on-LAN으로 깨운다(MAC을 기억하고 있을 때).
+private let historyWakeSender = MagicPacketSender()
+
 /// 스캔 기록: 네트워크 목록 → 네트워크(스캔·기억하는 기기) → 스캔 한 번의 기기 목록.
 struct HistoryView: View {
     @Environment(\.dismiss) private var dismiss
@@ -111,11 +114,21 @@ struct NetworkHistoryView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     }
+                    .swipeActions(edge: .leading) {
+                        if let mac = device.mac.flatMap(MACAddress.init), let ip = IPv4(device.address) {
+                            Button {
+                                Task { _ = await historyWakeSender.wake(mac: mac, lastKnownIP: ip, broadcast: network.broadcast) }
+                            } label: {
+                                Label("깨우기", systemImage: "power")
+                            }
+                            .tint(.green)
+                        }
+                    }
                 }
             } header: {
                 Text("기억하는 기기 \(network.devices.count)대")
             } footer: {
-                Text("IP·호스트 이름·Bonjour 이름으로 같은 기기를 알아봐요. 여기 없는 기기가 다음 스캔에 보이면 '새 기기'가 붙어요.")
+                Text("IP·호스트 이름·Bonjour 이름(·MAC)으로 같은 기기를 알아봐요. 여기 없는 기기가 다음 스캔에 보이면 '새 기기'가 붙어요. MAC을 아는 기기는 왼쪽으로 밀어 깨울 수 있어요(Wake-on-LAN).")
             }
         }
         .monospacedDigit()

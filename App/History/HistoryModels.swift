@@ -28,6 +28,14 @@ final class NetworkRecord {
     }
 
     var title: String { identity.title }
+
+    /// 서브넷 브로드캐스트(Wake-on-LAN용). cidr에서 계산한다
+    var broadcast: IPv4? {
+        let parts = cidr.split(separator: "/")
+        guard parts.count == 2, let network = IPv4(parts[0]), let prefix = Int(parts[1]),
+              let subnet = Subnet(address: network, prefixLength: prefix) else { return nil }
+        return subnet.broadcast
+    }
 }
 
 /// 이 네트워크에서 본 적 있는 기기. IP·호스트 이름·Bonjour 이름으로 다음 스캔의 기기와 짝짓는다(`DeviceMatcher`).

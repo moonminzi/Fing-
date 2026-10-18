@@ -351,6 +351,10 @@ struct DeviceDetailView: View {
                 }
             }
 
+            if device.mac != nil {
+                WakeSection(device: device, scan: scan)
+            }
+
             if device.model != nil || !device.banners.isEmpty {
                 Section("기기 정보") {
                     if let model = device.model {
@@ -604,5 +608,43 @@ private struct PingChart: View {
         .chartXScale(domain: 0.5...(Double(PingSession.count) + 0.5))
         .chartXAxis(.hidden)
         .chartYAxisLabel("ms")
+    }
+}
+
+/// 상세의 "제어": Wake-on-LAN으로 기기를 깨운다.
+private struct WakeSection: View {
+    let device: Device
+    let scan: ScanViewModel
+
+    @State private var isSending = false
+    @State private var result: Bool?
+
+    var body: some View {
+        Section {
+            Button {
+                Task {
+                    isSending = true
+                    result = await scan.wake(device)
+                    isSending = false
+                }
+            } label: {
+                HStack {
+                    Label("깨우기 (Wake on LAN)", systemImage: "power")
+                    Spacer()
+                    if isSending { ProgressView() }
+                }
+            }
+            .disabled(isSending)
+            if let result {
+                Text(result ? "매직 패킷을 보냈어요. 기기가 잠자기였거나 공유기가 IP를 기억하면 깨어나요."
+                             : "보내지 못했어요.")
+                    .font(.caption)
+                    .foregroundStyle(result ? .secondary : .orange)
+            }
+        } header: {
+            Text("제어")
+        } footer: {
+            Text("꺼진 기기를 깨우려면 그 기기에서 Wake-on-LAN을 켜 두어야 해요. 완전히 꺼진 기기는 iOS 제약(브로드캐스트)으로 못 깨울 수 있어요.")
+        }
     }
 }
