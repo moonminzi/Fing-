@@ -75,9 +75,11 @@ private final class BrowseSession: @unchecked Sendable {
         let key = "\(type)|\(name)"
         guard !resolved.contains(key), resolving[key] == nil else { return }
 
-        var txt: [String: String] = [:]
+        let txt: [String: String]
         if case .bonjour(let record) = result.metadata {
             txt = record.dictionary
+        } else {
+            txt = [:]
         }
         let connection = NWConnection(to: result.endpoint, using: Self.resolveParameters())
         resolving[key] = connection
