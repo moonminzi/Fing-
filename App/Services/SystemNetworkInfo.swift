@@ -17,7 +17,7 @@ struct SystemNetworkInfo: NetworkInfoProviding {
     /// BSSID는 iOS가 읽게 해 주는 남의 MAC — 접속한 AP의 하드웨어 주소다(무작위가 아니라 제조사가 나온다).
     /// 완료 핸들러가 어느 큐에서 불릴지 몰라서 격리되지 않은(nonisolated) 곳에서 감싼다.
     static func currentWiFi() async -> (ssid: String?, bssid: MACAddress?) {
-        await withCheckedContinuation { continuation in
+        await withCheckedContinuation { (continuation: CheckedContinuation<(ssid: String?, bssid: MACAddress?), Never>) in
             NEHotspotNetwork.fetchCurrent { network in
                 let ssid = network?.ssid
                 let bssid = network?.bssid.flatMap(MACAddress.init)
