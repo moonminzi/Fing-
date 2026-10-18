@@ -639,7 +639,7 @@ private struct WakeSection: View {
                 Text(result ? "매직 패킷을 보냈어요. 기기가 잠자기였거나 공유기가 IP를 기억하면 깨어나요."
                              : "보내지 못했어요.")
                     .font(.caption)
-                    .foregroundStyle(result ? .secondary : .orange)
+                    .foregroundStyle(result ? Color.secondary : Color.orange)
             }
         } header: {
             Text("제어")
