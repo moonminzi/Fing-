@@ -3,6 +3,8 @@ import NagoNetCore
 import Observation
 
 /// 스캔 버튼·진행률·기기 목록.
+///
+/// 스캔 한 번 = TCP 탐색(ScannerService) + Bonjour 검색 + 역방향 DNS를 함께 돌려 주소별로 합친다.
 @MainActor @Observable
 final class ScanViewModel {
     enum Status: Equatable {
@@ -16,22 +18,37 @@ final class ScanViewModel {
         case cancelled
     }
 
+    /// TCP 탐색이 끝난 뒤 늦게 오는 Bonjour 답을 더 기다리는 시간
+    static let bonjourGrace: Duration = .seconds(2)
+    /// 역방향 DNS 동시 조회 수
+    static let maxConcurrentLookups = 8
+
     private(set) var status: Status = .idle
     private(set) var devices: [IPv4: Device] = [:]
-    /// 0…1
+    /// TCP 탐색 진행률 0…1
     private(set) var progress: Double = 0
+    /// TCP 탐색은 끝났고 이름(Bonjour·DNS)을 마저 찾는 중
+    private(set) var isNaming = false
     var sortOrder: DeviceSort = .address
 
     @ObservationIgnored private let scanner: any NetworkScanning
+    @ObservationIgnored private let bonjour: any BonjourBrowsing
+    @ObservationIgnored private let hostNames: any HostNameResolving
     @ObservationIgnored private let access: any LocalNetworkAccessChecking
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     @ObservationIgnored private var scannedSubnet: Subnet?
+    /// 새 주소가 목록에 들어올 때마다 역방향 DNS 조회로 넘긴다
+    @ObservationIgnored private var lookupQueue: AsyncStream<IPv4>.Continuation?
 
     init(
         scanner: any NetworkScanning = ScannerService(prober: TCPProber()),
+        bonjour: any BonjourBrowsing = BonjourBrowser(),
+        hostNames: any HostNameResolving = ReverseDNSResolver(),
         access: any LocalNetworkAccessChecking = LocalNetworkAccess()
     ) {
         self.scanner = scanner
+        self.bonjour = bonjour
+        self.hostNames = hostNames
         self.access = access
     }
 
@@ -65,14 +82,9 @@ final class ScanViewModel {
                 }
                 guard !Task.isCancelled else { return }
 
-                // 2. TCP 탐색. 도중에 권한이 꺼지면 1로 돌아가 다시 허용되기를 기다린다
+                // 2. 탐색. 도중에 권한이 꺼지면 1로 돌아가 다시 허용되기를 기다린다
                 status = .scanning
-                progress = 0
-                var denied = false
-                for await event in scanner.scan(network.scanTargets) {
-                    if event == .localNetworkDenied { denied = true }
-                    apply(event, gateway: network.gateway.address)
-                }
+                let denied = await discover(on: network)
                 if !denied { break }
             }
             guard !Task.isCancelled else { return }
@@ -85,6 +97,7 @@ final class ScanViewModel {
         scanTask?.cancel()
         scanTask = nil
         status = .cancelled
+        isNaming = false
     }
 
     /// 다른 네트워크로 옮겨 가면 이전 결과는 지운다.
@@ -97,16 +110,91 @@ final class ScanViewModel {
         scannedSubnet = nil
     }
 
-    private func apply(_ event: ScanEvent, gateway: IPv4) {
-        switch event {
-        case .progress(let completed, let total):
-            progress = total > 0 ? Double(completed) / Double(total) : 1
-        case .host(let host):
-            var device = devices[host.address] ?? Device(address: host.address, isGateway: host.address == gateway)
-            device.merge(host)
-            devices[host.address] = device
-        case .localNetworkDenied:
-            status = .accessDenied
+    /// TCP 탐색·Bonjour·역방향 DNS를 함께 돌린다. 로컬 네트워크 권한이 막혀 멈췄으면 true.
+    private func discover(on network: NetworkSnapshot) async -> Bool {
+        progress = 0
+        isNaming = false
+        defer { isNaming = false }
+
+        let (lookups, lookupQueue) = AsyncStream.makeStream(of: IPv4.self)
+        self.lookupQueue = lookupQueue
+        // 이미 목록에 있는데 이름이 없는 기기(다시 스캔)도 조회
+        for device in devices.values where device.hostName == nil && !device.isSelf {
+            lookupQueue.yield(device.address)
         }
+
+        var denied = false
+        await withTaskGroup(of: Void.self) { names in
+            names.addTask { await self.resolveHostNames(lookups) }
+
+            await withTaskGroup(of: Void.self) { browsing in
+                browsing.addTask { await self.browseBonjour(on: network) }
+
+                for await event in scanner.scan(network.scanTargets) {
+                    switch event {
+                    case .progress(let completed, let total):
+                        progress = total > 0 ? Double(completed) / Double(total) : 1
+                    case .host(let host):
+                        upsert(host.address, network: network) { $0.merge(host) }
+                    case .localNetworkDenied:
+                        denied = true
+                        status = .accessDenied
+                    }
+                }
+                if !denied {
+                    isNaming = true
+                    try? await Task.sleep(for: Self.bonjourGrace)
+                }
+                browsing.cancelAll()
+            }
+            // 새 주소가 더 안 들어오니 남은 DNS 조회만 끝내면 된다
+            lookupQueue.finish()
+            self.lookupQueue = nil
+        }
+        return denied
+    }
+
+    private func browseBonjour(on network: NetworkSnapshot) async {
+        for await service in bonjour.discover(types: BonjourCatalog.serviceTypes) {
+            // VPN 등 다른 대역으로 풀린 주소는 버린다
+            guard network.subnet.contains(service.address) else { continue }
+            upsert(service.address, network: network) { $0.merge(service) }
+        }
+    }
+
+    private func resolveHostNames(_ addresses: AsyncStream<IPv4>) async {
+        let hostNames = self.hostNames
+        await withTaskGroup(of: (IPv4, String?).self) { group in
+            var running = 0
+            for await address in addresses {
+                if running >= Self.maxConcurrentLookups, case let (done, name)? = await group.next() {
+                    apply(hostName: name, to: done)
+                    running -= 1
+                }
+                group.addTask { (address, await hostNames.hostName(for: address)) }
+                running += 1
+            }
+            for await (done, name) in group {
+                apply(hostName: name, to: done)
+            }
+        }
+    }
+
+    private func apply(hostName: String?, to address: IPv4) {
+        guard let hostName else { return }
+        devices[address]?.hostName = hostName
+    }
+
+    /// 주소의 기기를 고치고, 처음 보는 주소면 새로 넣으며 DNS 조회를 건다.
+    private func upsert(_ address: IPv4, network: NetworkSnapshot, _ change: (inout Device) -> Void) {
+        if var device = devices[address] {
+            change(&device)
+            devices[address] = device
+            return
+        }
+        var device = Device(address: address, isGateway: address == network.gateway.address)
+        change(&device)
+        devices[address] = device
+        lookupQueue?.yield(address)
     }
 }

@@ -9,7 +9,7 @@ Swift 6 · SwiftUI · Swift Concurrency · Network 프레임워크 · SwiftData,
 | --- | --- | --- |
 | 1 | 내 네트워크 정보(SSID·내 IP·서브넷·게이트웨이)와 스캔 대역 계산 | ✅ |
 | 2 | TCP 연결로 기기 탐색, 진행률·취소, 기기 목록, 로컬 네트워크 권한 거부 안내 | ✅ |
-| 3 | Bonjour(NWBrowser)와 역방향 DNS로 기기 이름 찾기 | |
+| 3 | Bonjour(NWBrowser)와 역방향 DNS로 기기 이름 찾기 | ✅ |
 | 4 | 기기 종류 추정, 상세 화면, 포트 100개 스캔, 별명 | |
 | 5 | SwiftData로 네트워크별 기록, "새 기기" 배지 | |
 
@@ -25,9 +25,11 @@ Core/                       NagoNetCore: UI·Network 프레임워크 없음 → 
   Scanner.swift             ScannerService(actor): 두 번 훑는 TCP 탐색, HostProbing·NetworkScanning 프로토콜
   Device.swift              목록의 기기, 정렬, 스캔할 주소 목록
   LocalNetworkAccess.swift  로컬 네트워크 권한 확인 프로토콜
+  Bonjour.swift             Bonjour 서비스·이름 고르기·호스트 이름 다듬기, BonjourBrowsing·HostNameResolving 프로토콜
+  ReverseDNS.swift          getnameinfo 역방향 DNS(시간 제한·취소)
 App/                        NagoNet 앱
   Services/                 SystemNetworkInfo(SSID: NEHotspotNetwork), WiFiPathMonitor, LocationPermission,
-                            TCPProber(NWConnection), LocalNetworkAccess(권한 확인)
+                            TCPProber(NWConnection), LocalNetworkAccess(권한 확인), BonjourBrowser(NWBrowser)
   ViewModels/               @Observable 뷰모델
   Views/                    SwiftUI 화면
 ```
@@ -64,6 +66,22 @@ App/                        NagoNet 앱
   막혀 있으면 연결이 `.waiting` + `unsatisfiedReason == .localNetworkDenied`에 머문다 → "로컬 네트워크 권한이 필요해요"와
   설정 열기 버튼. 처음 스캔할 때는 이 연결이 iOS 허용 창을 띄우고, 허용하면(창이나 설정에서) iOS가 연결을 다시 시도하므로
   스캔이 자동으로 이어진다. 스캔 도중 권한이 꺼져도 같은 화면으로 간다.
+
+### 기기 이름을 어떻게 찾나
+
+TCP 탐색과 함께 두 가지를 동시에 돌려 주소별로 합친다(`ScanViewModel.discover`).
+
+- **Bonjour**: `NWBrowser`로 11종(`_airplay`, `_raop`, `_googlecast`, `_ipp`, `_printer`, `_smb`, `_ssh`, `_http`, `_hap`,
+  `_companion-link`, `_spotify-connect`)을 TXT 레코드와 함께 찾는다. NWBrowser는 주소를 주지 않아서 서비스마다
+  NWConnection(IPv4만, Wi-Fi만)을 열어 시스템이 푼 주소(`currentPath.remoteEndpoint`)만 읽고 바로 끊는다.
+  TCP 탐색 포트에 답하지 않는 기기(방화벽 켠 맥 등)도 Bonjour로 찾으면 목록에 더한다("Bonjour" 표시).
+  TCP 탐색이 끝난 뒤 늦게 오는 답을 2초 더 기다린다.
+- **역방향 DNS**: 목록에 새 주소가 들어올 때마다 `getnameinfo(NI_NAMEREQD)`로 PTR 이름을 묻는다(동시 8개, 3초 제한).
+  보통 공유기 DNS가 DHCP로 받은 기기 이름(`Galaxy-S23.lan` 같은)을 알려 준다.
+- **이름 고르는 순서**: Bonjour 이름 → DNS 이름 → (공유기면) "공유기" → IP.
+  - Bonjour는 사용자가 붙인 이름이 그대로 든 서비스 먼저: Google Cast(TXT의 `fn`) → Apple 기기(companion-link) →
+    AirPlay → AirPlay 오디오(`MAC@이름`에서 이름만) → HomeKit → 프린터 → Spotify → SMB → SSH → 웹
+  - DNS 이름은 `.lan`·`.local` 같은 꼬리를 떼고, `192-168-0-7`처럼 IP를 그대로 쓴 이름은 버린다.
 
 ## iOS에서 하지 않는 것
 
@@ -131,3 +149,15 @@ swift test --package-path Core
    **설정 열기**가 나온다. 설정에서 다시 켜고 돌아오면 스캔이 저절로 이어진다.
 7. VPN을 켠 채로 스캔해도 기기가 똑같이 나오는지 본다(연결을 Wi-Fi로 고정).
 8. 스캔 중 홈 화면으로 나가면 스캔이 멈춘다(백그라운드 스캔 안 함). 다른 Wi-Fi로 옮기면 목록이 비워진다.
+
+### 3단계: Bonjour와 역방향 DNS로 이름 찾기
+
+1. **스캔 시작**. 진행 막대가 끝나면 "기기 이름 찾는 중…"이 2초쯤 나온 뒤 끝난다.
+2. 애플 기기·TV·스피커·프린터는 **사용자가 붙인 이름**("민지의 iPhone", "거실 Apple TV", "HP LaserJet …")으로,
+   나머지는 공유기가 아는 **호스트 이름**("Galaxy-S23" 같은)으로 바뀌는지 본다.
+   - 아래 줄에 IP와 찾은 서비스(Apple 기기 · AirPlay …)가 나온다.
+   - 이름이 안 붙는 기기는 Bonjour 광고도 없고 공유기 DNS에도 이름이 없는 기기다(정상).
+3. 기기를 누르면 상세에 **Bonjour 이름 / 호스트 이름(DNS)**과 **Bonjour 서비스 목록**(종류, 인스턴스 이름, 포트, 모델)이 나온다.
+4. 2단계에서 빠졌던 기기(방화벽을 켠 맥 등)가 오른쪽에 "Bonjour"라고 표시되며 새로 잡히는지 본다.
+5. **이름순** 정렬로 바꾸면 이름 있는 기기가 가나다순으로 먼저, 이름 없는 기기는 뒤에 IP순으로 나온다.
+6. VPN을 켠 채로도 이름이 똑같이 나오는지 본다(Bonjour 검색과 주소 풀기도 Wi-Fi로 고정).
