@@ -52,6 +52,7 @@ final class ScanViewModel {
     @ObservationIgnored private let bonjour: any BonjourBrowsing
     @ObservationIgnored private let naming: any DeviceNaming
     @ObservationIgnored private let arpReader: ARPTableReader
+    @ObservationIgnored private let arpCache: any ARPCacheReading
     @ObservationIgnored private let vendorLookup: (MACAddress) -> String?
     @ObservationIgnored private let wakeSender = MagicPacketSender()
     /// 앱이 백그라운드로 간 뒤 진행 중인 스캔을 마무리하는 시간(약 30초)
@@ -79,6 +80,7 @@ final class ScanViewModel {
         naming: any DeviceNaming = NameResolver(dns: ReverseDNSResolver(timeout: .seconds(2)), transport: UDPExchange(),
                                                 http: HTTPFetcher()),
         arpReader: ARPTableReader = ARPTableReader(transport: UDPExchange()),
+        arpCache: any ARPCacheReading = SystemARPCache(),
         vendorLookup: @escaping (MACAddress) -> String? = VendorLookup.vendor(for:),
         bannerGrabber: any BannerGrabbing = BannerGrabber(),
         portScanner: any PortScanning = PortScanner(prober: TCPProber()),
@@ -90,6 +92,7 @@ final class ScanViewModel {
         self.bonjour = bonjour
         self.naming = naming
         self.arpReader = arpReader
+        self.arpCache = arpCache
         self.vendorLookup = vendorLookup
         self.bannerGrabber = bannerGrabber
         self.portScanner = portScanner
@@ -365,6 +368,8 @@ final class ScanViewModel {
             }
             // 웹·SSH 포트가 열린 기기의 배너(이름 없는 공유기·AP·프린터·NAS의 단서)와 공유기 ARP 표(MAC)
             if !denied, !Task.isCancelled {
+                // 스캔하며 OS가 채운 이 기기 ARP 캐시에서 MAC을 먼저 거둔다(공짜, 권한 불필요)
+                applyLocalARP(on: network)
                 async let routerTable: Void = readRouterTable(on: network)
                 await readBanners(of: devices.values.filter { !$0.isSelf && $0.banners.isEmpty })
                 await routerTable
@@ -400,6 +405,16 @@ final class ScanViewModel {
             for await (done, names) in group {
                 devices[done]?.merge(names)
                 refresh(done)
+            }
+        }
+    }
+
+    /// 이 기기 자신의 ARP 캐시를 읽어 MAC을 채운다. 스캔하며 연결한 기기의 MAC이 여기 담겨 있다.
+    private func applyLocalARP(on network: NetworkSnapshot) {
+        for (address, mac) in arpCache.read() where devices[address] != nil {
+            if devices[address]?.localARPMAC != mac {
+                devices[address]?.localARPMAC = mac
+                refresh(address)
             }
         }
     }

@@ -31,6 +31,8 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var upnp: UPnPDevice?
     /// 공유기 ARP 표(SNMP)에서 읽은 MAC
     public var routerMAC: MACAddress?
+    /// 이 기기 자신의 ARP 캐시에서 읽은 MAC(스캔하며 OS가 알아낸 것)
+    public var localARPMAC: MACAddress?
     /// NetBIOS 답에 든 MAC
     public var netbiosMAC: MACAddress?
     /// MAC 앞자리로 찾은 제조사(앱이 OUI 표로 채운다)
@@ -70,6 +72,7 @@ public struct Device: Hashable, Sendable, Identifiable {
     /// 알게 된 MAC과 출처. 공유기 ARP 표 → NetBIOS → AirPlay 광고 순으로 믿는다
     public var mac: (address: MACAddress, source: MACSource)? {
         if let routerMAC { return (routerMAC, .router) }
+        if let localARPMAC { return (localARPMAC, .localARP) }
         if let netbiosMAC { return (netbiosMAC, .netbios) }
         if let airplayMAC { return (airplayMAC, .airplay) }
         return nil

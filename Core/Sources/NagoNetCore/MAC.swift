@@ -84,6 +84,7 @@ public struct OUIDatabase: Sendable {
 /// 어디서 알게 된 MAC인지.
 public enum MACSource: String, Hashable, Sendable {
     case router = "공유기 ARP 표(SNMP)"
+    case localARP = "이 기기 ARP 캐시"
     case netbios = "NetBIOS 응답"
     case airplay = "AirPlay 광고"
 }

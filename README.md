@@ -42,6 +42,7 @@ Core/                       NagoNetCore: UI·Network 프레임워크 없음 → 
   MAC.swift                 MAC 주소(무작위 주소 판별), OUI 제조사 표
   SSDP.swift                SSDP 유니캐스트 검색·UPnP 설명 XML 해석, HTTPFetching 프로토콜
   SNMP.swift                SNMPv2c(BER) GetBulk, 공유기 ARP 표 읽기(ARPTableReader)
+  ARPTable.swift            이 기기 ARP 캐시 읽기(sysctl NET_RT_FLAGS+RTF_LLINFO), ARPCacheReading
   Export.swift              CSV 내보내기, 레이더 배치(RadarLayout)
   WakeOnLAN.swift           Wake-on-LAN 매직 패킷
 App/                        NagoNet 앱
