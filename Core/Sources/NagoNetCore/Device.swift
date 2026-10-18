@@ -33,6 +33,8 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var routerMAC: MACAddress?
     /// 이 기기 자신의 ARP 캐시에서 읽은 MAC(스캔하며 OS가 알아낸 것)
     public var localARPMAC: MACAddress?
+    /// DHCP 요청을 엿들어 잡은 MAC(기기가 Wi-Fi에 붙거나 갱신할 때 알린 chaddr). 공유기 없이 얻은 진짜 MAC
+    public var dhcpMAC: MACAddress?
     /// NetBIOS 답에 든 MAC
     public var netbiosMAC: MACAddress?
     /// MAC 앞자리로 찾은 제조사(앱이 OUI 표로 채운다)
@@ -77,7 +79,7 @@ public struct Device: Hashable, Sendable, Identifiable {
     /// (NetBIOS·AirPlay·Bonjour) → 기기 ID·IPv6에서 거꾸로 푼 것 순으로 믿는다
     public var mac: (address: MACAddress, source: MACSource)? {
         let candidates: [(MACAddress?, MACSource)] = [
-            (routerMAC, .router), (localARPMAC, .localARP),
+            (routerMAC, .router), (localARPMAC, .localARP), (dhcpMAC, .dhcp),
             (reportedMACs[.deviceSNMP], .deviceSNMP), (reportedMACs[.deviceAPI], .deviceAPI),
             (netbiosMAC, .netbios), (airplayMAC, .airplay), (reportedMACs[.bonjour], .bonjour),
             (reportedMACs[.deviceID], .deviceID), (reportedMACs[.ipv6], .ipv6),

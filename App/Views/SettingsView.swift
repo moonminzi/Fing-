@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(AppSettings.snmpEnabledKey) private var snmpEnabled = true
     @AppStorage(AppSettings.snmpCommunityKey) private var snmpCommunity = "public"
+    @AppStorage(AppSettings.dhcpSniffKey) private var dhcpSniff = true
     @AppStorage(AppSettings.backgroundCheckKey) private var backgroundCheck = false
     @State private var notificationsDenied = false
 
@@ -21,10 +22,11 @@ struct SettingsView: View {
                                 .autocorrectionDisabled()
                         }
                     }
+                    Toggle("DHCP 스니핑(실험)", isOn: $dhcpSniff)
                 } header: {
                     Text("MAC 주소")
                 } footer: {
-                    Text("iOS는 다른 기기의 MAC을 지워서 주기 때문에, 기기가 스스로 공개한 MAC을 모아요: NetBIOS(윈도우)·AirPlay·Time Machine·워크스테이션 광고, UPnP·프린터 기기 ID, IPv6 주소(EUI-64), Roku·삼성 TV·Hue·Shelly 정보 API. 이 스위치를 켜면 SNMP가 켜진 공유기·AP에 ARP 표를, 프린터·NAS 같은 기기에는 자기 인터페이스 MAC을 물어봐요(UDP 161, 읽기만). 커뮤니티 문자열은 관리자가 정한 값이에요(보통 public). 휴대폰은 Wi-Fi마다 무작위 MAC을 써서 제조사가 안 나와요.")
+                    Text("iOS는 다른 기기의 MAC을 지워서 주기 때문에, 기기가 스스로 공개한 MAC을 모아요: NetBIOS(윈도우)·AirPlay·Time Machine·워크스테이션 광고, UPnP·프린터 기기 ID, IPv6 주소(EUI-64), Roku·삼성 TV·Hue·Shelly 정보 API. 이 스위치를 켜면 SNMP가 켜진 공유기·AP에 ARP 표를, 프린터·NAS 같은 기기에는 자기 인터페이스 MAC을 물어봐요(UDP 161, 읽기만). 커뮤니티 문자열은 관리자가 정한 값이에요(보통 public). 휴대폰은 Wi-Fi마다 무작위 MAC을 써서 제조사가 안 나와요.\n\nDHCP 스니핑(실험): 스캔하는 동안 :67 포트로 오는 DHCP 요청을 엿들어요. 기기가 Wi-Fi에 새로 붙거나 임대를 갱신하는 순간 자기 MAC(chaddr)을 브로드캐스트하는데, 그걸 공유기·비번 없이 바로 잡아요. iOS가 그 브로드캐스트를 앱에 넘겨줄지는 기기마다 달라서, 스캔 요약에 '막힘 / 0개 / N개 잡음'으로 결과가 나와요. 테스트하려면 스캔 중에 폰의 Wi-Fi를 껐다 켜 보세요.")
                 }
 
                 Section {

@@ -50,6 +50,8 @@ final class ScanViewModel {
     private(set) var routerTableStatus: String?
     /// 이 기기 ARP 캐시 진단 한 줄(iOS가 다른 기기 MAC을 흘리는지/가리는지). 공유기·비번 없이 측정
     private(set) var localARPStatus: String?
+    /// DHCP 스니핑(실험) 결과 한 줄(공유기 없이 기기 MAC을 직접 잡았는지)
+    private(set) var dhcpStatus: String?
 
     /// 네트워크마다 스캐너를 만든다(핑을 그 Wi-Fi 인터페이스로 묶으려고)
     @ObservationIgnored private let makeScanner: (NetworkSnapshot) -> any NetworkScanning
@@ -58,6 +60,7 @@ final class ScanViewModel {
     @ObservationIgnored private let arpReader: ARPTableReader
     @ObservationIgnored private let arpCache: any ARPCacheReading
     @ObservationIgnored private let macProber: any MACProbing
+    @ObservationIgnored private let dhcpSniffer: any DHCPSniffing
     @ObservationIgnored private let vendorLookup: (MACAddress) -> String?
     @ObservationIgnored private let wakeSender = MagicPacketSender()
     /// 앱이 백그라운드로 간 뒤 진행 중인 스캔을 마무리하는 시간(약 30초)
@@ -73,6 +76,8 @@ final class ScanViewModel {
     @ObservationIgnored private var scannedNetwork: NetworkSnapshot?
     @ObservationIgnored private var portScanTasks: [IPv4: Task<Void, Never>] = [:]
     @ObservationIgnored private var scanTask: Task<Void, Never>?
+    /// DHCP 스니핑(실험) 리스너. 스캔과 함께 돌고 고정 창(약 25초) 뒤 스스로 끝난다
+    @ObservationIgnored private var dhcpTask: Task<Void, Never>?
     @ObservationIgnored private var scannedSubnet: Subnet?
     /// 새 주소가 목록에 들어올 때마다 이름 조회로 넘긴다
     @ObservationIgnored private var lookupQueue: AsyncStream<IPv4>.Continuation?
@@ -87,6 +92,7 @@ final class ScanViewModel {
         arpReader: ARPTableReader = ARPTableReader(transport: UDPExchange()),
         arpCache: any ARPCacheReading = SystemARPCache(),
         macProber: any MACProbing = MACProber(transport: UDPExchange(), http: HTTPFetcher(timeout: .milliseconds(1500))),
+        dhcpSniffer: any DHCPSniffing = DHCPSniffer(),
         vendorLookup: @escaping (MACAddress) -> String? = VendorLookup.vendor(for:),
         bannerGrabber: any BannerGrabbing = BannerGrabber(),
         portScanner: any PortScanning = PortScanner(prober: TCPProber()),
@@ -100,6 +106,7 @@ final class ScanViewModel {
         self.arpReader = arpReader
         self.arpCache = arpCache
         self.macProber = macProber
+        self.dhcpSniffer = dhcpSniffer
         self.vendorLookup = vendorLookup
         self.bannerGrabber = bannerGrabber
         self.portScanner = portScanner
@@ -164,6 +171,7 @@ final class ScanViewModel {
 
     func start(on network: NetworkSnapshot) {
         scanTask?.cancel()
+        dhcpTask?.cancel()
         if scannedSubnet != network.subnet {
             devices = [:]
         }
@@ -211,6 +219,7 @@ final class ScanViewModel {
         guard isRunning else { return }
         scanTask?.cancel()
         scanTask = nil
+        dhcpTask?.cancel()
         status = .cancelled
         isNaming = false
         endBackgroundTask()
@@ -352,6 +361,8 @@ final class ScanViewModel {
         isNaming = false
         defer { isNaming = false }
 
+        startDHCPSniff(on: network)   // 스캔 도는 동안 DHCP 요청을 엿들어 MAC을 잡는다(실험, 공유기·비번 없이)
+
         let (lookups, lookupQueue) = AsyncStream.makeStream(of: IPv4.self)
         self.lookupQueue = lookupQueue
         // 이미 목록에 있는데 이름이 없는 기기(다시 스캔)도 조회
@@ -467,6 +478,52 @@ final class ScanViewModel {
             lines.append("→ 이 기기에선 다른 기기 MAC을 공유기 SNMP로만 얻을 수 있어요.")
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    /// 듣는 창(기기가 Wi-Fi에 새로 붙거나 갱신할 시간을 주려고 넉넉히)
+    static let dhcpListenWindow: Duration = .seconds(25)
+
+    /// DHCP 요청을 스캔 도는 동안 엿듣는다(실험). 기기가 Wi-Fi에 붙거나 갱신하면 그 chaddr MAC을 잡는다 — 공유기·비번 없이.
+    /// 고정 창 뒤 스스로 끝난다. 새 스캔이 시작되면 이전 리스너는 취소돼 결과를 덮어쓰지 않는다.
+    private func startDHCPSniff(on network: NetworkSnapshot) {
+        dhcpTask?.cancel()
+        guard AppSettings.dhcpSniffEnabled else { dhcpStatus = nil; return }
+        dhcpStatus = nil
+        let sniffer = dhcpSniffer
+        let window = Self.dhcpListenWindow
+        dhcpTask = Task {
+            var blocked = false
+            var caught = 0
+            for await event in sniffer.events(on: network.interfaceName, for: window) {
+                if Task.isCancelled { break }
+                switch event {
+                case .listening: break
+                case .blocked: blocked = true
+                case .sighting(let sighting): if applyDHCP(sighting, network: network) { caught += 1 }
+                }
+            }
+            if !Task.isCancelled { dhcpStatus = Self.dhcpMessage(blocked: blocked, caught: caught) }
+        }
+    }
+
+    /// 잡은 DHCP MAC을 그 IP의 기기에 붙인다(요청 IP를 알 때만). 값이 새로 생기거나 바뀌었으면 true.
+    @discardableResult
+    private func applyDHCP(_ sighting: DHCPSighting, network: NetworkSnapshot) -> Bool {
+        guard let ip = sighting.requestedIP, network.subnet.contains(ip) else { return false }
+        let had = devices[ip]?.dhcpMAC
+        upsert(ip, network: network) { $0.dhcpMAC = sighting.mac }
+        return had != sighting.mac
+    }
+
+    /// DHCP 스니핑 결과를 사람이 읽을 한 줄로. 막혔는지/잡았는지 측정값 그대로 알린다.
+    static func dhcpMessage(blocked: Bool, caught: Int) -> String {
+        if blocked {
+            return "DHCP 스니핑(실험): iOS가 소켓(:67)을 막아 못 들었어요 — 이 기기에선 이 길은 불가."
+        }
+        if caught > 0 {
+            return "DHCP 스니핑(실험): 기기가 붙거나 갱신할 때 MAC \(caught)개를 직접 잡았어요! 공유기 없이 얻은 거예요."
+        }
+        return "DHCP 스니핑(실험): 들었지만 0개(그새 새로 붙거나 갱신한 기기가 없었어요). 폰을 Wi-Fi에 새로 연결하면 그때 잡혀요."
     }
 
     /// 공유기(다음으로 관리형 AP 몇 대)에 SNMP로 ARP 표를 물어 MAC을 채운다. 탐색엔 안 잡혔지만

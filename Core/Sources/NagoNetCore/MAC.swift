@@ -87,6 +87,8 @@ public struct OUIDatabase: Sendable {
 public enum MACSource: String, Hashable, Sendable {
     case router = "공유기 ARP 표(SNMP)"
     case localARP = "이 기기 ARP 캐시"
+    /// DHCP 요청을 엿들어 잡은 MAC(기기가 Wi-Fi에 붙거나 갱신할 때 브로드캐스트한 chaddr) — 공유기 없이 얻음
+    case dhcp = "DHCP 요청(스니핑)"
     /// 기기에 SNMP로 물은 자기 인터페이스 MAC(ifPhysAddress) — 프린터·NAS·AP·스위치
     case deviceSNMP = "기기 SNMP(인터페이스 MAC)"
     /// 기기의 정보 API가 알려 준 MAC — Roku·삼성 TV·Hue 브리지·Shelly
