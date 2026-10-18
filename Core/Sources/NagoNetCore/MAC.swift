@@ -7,9 +7,11 @@ import Foundation
 public struct MACAddress: Hashable, Sendable, Codable, CustomStringConvertible {
     public let bytes: [UInt8]
 
-    /// 6바이트. 모두 0이거나 모두 FF(쓸 수 없는 값)면 nil
+    /// 6바이트. 쓸 수 없는 값이면 nil: 모두 0, 모두 FF, 또는 뒤 5바이트가 모두 0(02:00:00:00:00:00 같은
+    /// iOS가 가린 자리표시자 — iOS는 ARP 캐시 항목은 주되 MAC을 0으로 비운다).
     public init?(_ bytes: [UInt8]) {
-        guard bytes.count == 6, bytes.contains(where: { $0 != 0 }), bytes.contains(where: { $0 != 0xFF }) else { return nil }
+        guard bytes.count == 6, bytes.contains(where: { $0 != 0xFF }),
+              bytes.dropFirst().contains(where: { $0 != 0 }) else { return nil }
         self.bytes = bytes
     }
 

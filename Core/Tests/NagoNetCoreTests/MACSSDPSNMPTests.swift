@@ -10,6 +10,10 @@ struct MACTests {
         #expect(mac?.oui == "A483E7")
         #expect(MACAddress("00:00:00:00:00:00") == nil)
         #expect(MACAddress("FF:FF:FF:FF:FF:FF") == nil)
+        // iOS가 가린 자리표시자(뒤 5바이트가 모두 0)는 MAC이 아니다
+        #expect(MACAddress("02:00:00:00:00:00") == nil)
+        #expect(MACAddress([0x06, 0, 0, 0, 0, 0]) == nil)
+        #expect(MACAddress("02:00:00:00:00:01") != nil)
         #expect(MACAddress("A4:83:E7:01:02") == nil)
         #expect(MACAddress("G4:83:E7:01:02:FF") == nil)
     }
