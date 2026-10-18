@@ -59,6 +59,26 @@ struct ARPCacheTests {
         #expect(ARPCache.parse([0xFF, 0xFF, 5, 4]).isEmpty)
     }
 
+    @Test func reportSeparatesRealMACsFromHiddenOnes() {
+        let real: [UInt8] = [0x3C, 0x7C, 0x3F, 0x11, 0x22, 0x33]
+        let bytes = message([0: inet(IPv4(192, 168, 0, 7)), 1: link(real)])
+            + message([0: inet(IPv4(192, 168, 0, 8)), 1: link([0, 0, 0, 0, 0, 0])])   // iOS가 0으로 가림
+            + message([0: inet(IPv4(192, 168, 0, 9)), 1: link([2, 0, 0, 0, 0, 0])])   // 02:00:… 자리표시자
+        let report = ARPCache.report(bytes)
+        #expect(report.entries == 3)
+        #expect(report.usableCount == 1)
+        #expect(report.hiddenCount == 2)
+        #expect(report.usable[IPv4(192, 168, 0, 7)] == MACAddress(real))
+        #expect(Set(report.hidden) == [IPv4(192, 168, 0, 8), IPv4(192, 168, 0, 9)])
+        // parse는 report의 usable과 같아야 한다(기존 동작 유지)
+        #expect(ARPCache.parse(bytes) == report.usable)
+    }
+
+    @Test func reportIsEmptyForEmptyCache() {
+        #expect(ARPCache.report([]) == .empty)
+        #expect(ARPCache.report([]).entries == 0)
+    }
+
     @Test func deviceLearnsMACFromLocalARP() {
         var device = Device(address: IPv4(192, 168, 0, 7), responseTime: .milliseconds(5))
         device.localARPMAC = MACAddress([0x3C, 0x7C, 0x3F, 0x11, 0x22, 0x33])

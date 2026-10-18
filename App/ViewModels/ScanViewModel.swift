@@ -48,6 +48,8 @@ final class ScanViewModel {
     private(set) var baseline: NetworkBaseline = .empty
     /// 공유기 ARP 표(SNMP)를 읽은 결과 한 줄
     private(set) var routerTableStatus: String?
+    /// 이 기기 ARP 캐시 진단 한 줄(iOS가 다른 기기 MAC을 흘리는지/가리는지). 공유기·비번 없이 측정
+    private(set) var localARPStatus: String?
 
     /// 네트워크마다 스캐너를 만든다(핑을 그 Wi-Fi 인터페이스로 묶으려고)
     @ObservationIgnored private let makeScanner: (NetworkSnapshot) -> any NetworkScanning
@@ -427,13 +429,30 @@ final class ScanViewModel {
     }
 
     /// 이 기기 자신의 ARP 캐시를 읽어 MAC을 채운다. 스캔하며 연결한 기기의 MAC이 여기 담겨 있다.
+    /// 더불어 iOS가 그 MAC을 흘려주는지(진짜 MAC)·가리는지(02:00:…)를 그대로 세어 진단 한 줄로 남긴다.
     private func applyLocalARP(on network: NetworkSnapshot) {
-        for (address, mac) in arpCache.read() where devices[address] != nil {
+        let report = arpCache.readReport()
+        for (address, mac) in report.usable where devices[address] != nil {
             if devices[address]?.localARPMAC != mac {
                 devices[address]?.localARPMAC = mac
                 refresh(address)
             }
         }
+        localARPStatus = Self.localARPMessage(report)
+    }
+
+    /// ARP 캐시 진단을 사람이 읽을 한 줄로. iOS가 MAC을 주는지/가리는지 추측 없이 측정값 그대로 알린다.
+    static func localARPMessage(_ report: ARPCacheReport) -> String? {
+        if report.usableCount > 0 {
+            let hidden = report.hiddenCount > 0 ? ", 가린 것 \(report.hiddenCount)개" : ""
+            return "이 기기 ARP 캐시에서 MAC \(report.usableCount)개를 직접 읽었어요"
+                + "(항목 \(report.entries)개 중\(hidden)) — iOS가 MAC을 흘리는 기기예요."
+        }
+        if report.hiddenCount > 0 {
+            return "iOS가 ARP 항목 \(report.hiddenCount)개를 주지만 MAC은 전부 02:00:…으로 가렸어요. "
+                + "이 기기에선 다른 기기 MAC을 공유기 SNMP로만 얻을 수 있어요."
+        }
+        return nil
     }
 
     /// 공유기(다음으로 관리형 AP 몇 대)에 SNMP로 ARP 표를 물어 MAC을 채운다. 탐색엔 안 잡혔지만
