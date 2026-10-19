@@ -82,6 +82,26 @@ struct MACTests {
         #expect(phone.classification.reasons == ["무작위 MAC(비공개 Wi-Fi 주소)를 쓰는 휴대기기"])
     }
 
+    @Test func rememberedMACFillsInWhenNothingObserved() {
+        var ipad = Device(address: IPv4(10, 0, 0, 7), responseTime: .milliseconds(30))
+        ipad.rememberedMAC = MACAddress("A6:00:00:00:00:09")
+        // 이번에 아무 것도 못 잡았으면 기억된 MAC을 쓴다
+        #expect(ipad.observedMAC == nil)
+        #expect(ipad.mac?.source == .remembered)
+        // 이번에 DHCP로 잡으면 그게 우선이고, 기억된 건 뒤로 밀린다
+        ipad.dhcpMAC = MACAddress("A6:00:00:00:00:01")
+        #expect(ipad.observedMAC?.source == .dhcp)
+        #expect(ipad.mac?.source == .dhcp)
+    }
+
+    @Test func stableKeysExcludeMACForMemory() {
+        let identity = DeviceIdentity(address: IPv4(10, 0, 0, 7), hostName: nil,
+                                      bonjourName: "Minjis iPad", mac: MACAddress("A6:00:00:00:00:01"))
+        // 기억된 MAC을 이름으로 찾아야 하므로 MAC 열쇠는 빼야 한다(MAC으로 MAC 찾으면 순환)
+        #expect(identity.stableKeys(network: "net") == ["bonjour:minjis ipad", "ip:net/10.0.0.7"])
+        #expect(identity.keys(network: "net").first == "mac:A6:00:00:00:00:01")
+    }
+
     @Test func vendorDrivesKindAndName() {
         var nas = Device(address: IPv4(10, 0, 0, 8), responseTime: .milliseconds(2))
         nas.routerMAC = MACAddress("00:11:32:00:00:01")

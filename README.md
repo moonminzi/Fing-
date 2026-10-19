@@ -210,6 +210,7 @@ iOS(그리고 안드로이드 10 이상)는 앱에 다른 기기의 MAC을 주�
 | Bonjour 광고 | 시놀로지·QNAP·Time Machine 디스크, 리눅스(avahi), 아이폰·아이패드(Wi-Fi 동기화), ESPHome, Hue | `_adisk` TXT `sys=waMa=…`, `_workstation` 이름의 `[MAC]`, `_apple-mobdev2` 이름의 `MAC@`, `_esphomelib` TXT `mac`, `_hue` TXT `bridgeid`(가운데 FFFE를 빼면 MAC) |
 | 기기 ID(UUID) | UPnP 기기(Hue·공유기·TV), 프린터(브라더·엡손·캐논), 소노스 | 버전 1 UUID의 끝 12자리는 만든 기기의 MAC(RFC 4122). UPnP `UDN`, IPP TXT `UUID`, 소노스 `RINCON_<MAC>` |
 | IPv6 주소(EUI-64) | 프린터·TV·공유기·IoT(리눅스·임베디드) | mDNS로 호스트 이름의 AAAA를 묻고, 인터페이스 ID가 `…ff:fe…`면 가운데를 빼고 U/L 비트를 되돌린다 |
+| 기억된 MAC | 한 번이라도 잡힌 기기(특히 아이패드·아이폰) | 위 방법으로 한 번 잡은 MAC을 mDNS·Bonjour 이름으로 기억해 두고(`MACMemoryStore`), DHCP가 그 순간 못 잡아도 되살린다 |
 
 기기 ID와 IPv6는 우연히 MAC 꼴이 될 수 있어서 **IEEE에 등록된 제조사 번호일 때만** 믿는다. 휴대폰은 Wi-Fi마다 무작위
 MAC을 써서, 어디서 얻든 제조사가 안 나온다(이건 MAC을 읽는 쪽이 아니라 폰이 그렇게 만든 것). 스스로는 MAC을 공개하지 않는

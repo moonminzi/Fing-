@@ -70,6 +70,8 @@ final class ScanViewModel {
     @ObservationIgnored private let history: any ScanHistoryStoring
     /// 4단계에서 UserDefaults에 붙인 별명(읽기만, 다음 기록 때 SwiftData로 옮겨진다)
     @ObservationIgnored private let legacyAliases: any AliasStoring
+    /// 이름으로 MAC을 기억해 둔다(DHCP가 기회성이라 Apple 기기 등은 한 번 잡으면 다음 스캔에도 되살린다)
+    @ObservationIgnored private let macMemory: any MACMemoryStoring
     @ObservationIgnored private let access: any LocalNetworkAccessChecking
     /// 이번 스캔 중에 고친 별명(기록에는 바로 저장되지만 baseline은 스캔 시작 때 것이라 따로 든다)
     @ObservationIgnored private var aliasEdits: [IPv4: String?] = [:]
@@ -98,6 +100,7 @@ final class ScanViewModel {
         portScanner: any PortScanning = PortScanner(prober: TCPProber()),
         history: any ScanHistoryStoring,
         legacyAliases: any AliasStoring = AliasStore(),
+        macMemory: any MACMemoryStoring = MACMemoryStore(),
         access: any LocalNetworkAccessChecking = LocalNetworkAccess()
     ) {
         self.makeScanner = makeScanner
@@ -112,6 +115,7 @@ final class ScanViewModel {
         self.portScanner = portScanner
         self.history = history
         self.legacyAliases = legacyAliases
+        self.macMemory = macMemory
         self.access = access
     }
 
@@ -299,6 +303,7 @@ final class ScanViewModel {
         if var device = devices[address], device.refreshReportedMACs(isRegistered: { vendorLookup($0) != nil }) {
             devices[address] = device
         }
+        rememberOrRecallMAC(of: address)
         if let mac = devices[address]?.mac?.address {
             let vendor = vendorLookup(mac)
             if devices[address]?.macVendor != vendor {
@@ -306,6 +311,19 @@ final class ScanViewModel {
             }
         }
         refreshAlias(of: address)
+    }
+
+    /// 이번에 실제로 잡은 MAC은 이름으로 기억해 두고, 못 잡았으면 이전에 기억한 MAC을 되살린다.
+    /// DHCP는 기기가 붙거나 갱신하는 순간만 잡혀서, Apple 기기는 한 스캔에서만 잡히기 쉽다 — 그래서 기억해 둔다.
+    private func rememberOrRecallMAC(of address: IPv4) {
+        guard let device = devices[address], !device.isSelf else { return }
+        let keys = device.identity.stableKeys(network: legacyNetworkKey)
+        if let observed = device.observedMAC?.address {
+            macMemory.remember(observed, forKeys: keys)
+            if devices[address]?.rememberedMAC != nil { devices[address]?.rememberedMAC = nil }
+        } else if let recalled = macMemory.recall(forKeys: keys), devices[address]?.rememberedMAC != recalled {
+            devices[address]?.rememberedMAC = recalled
+        }
     }
 
     /// 기기의 별명: 이번에 고친 것 → 기록(SwiftData) → 4단계의 UserDefaults

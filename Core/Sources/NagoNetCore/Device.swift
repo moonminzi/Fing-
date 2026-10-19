@@ -35,6 +35,8 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var localARPMAC: MACAddress?
     /// DHCP 요청을 엿들어 잡은 MAC(기기가 Wi-Fi에 붙거나 갱신할 때 알린 chaddr). 공유기 없이 얻은 진짜 MAC
     public var dhcpMAC: MACAddress?
+    /// 이전 스캔에서 잡아 이름(mDNS·Bonjour)으로 기억해 둔 MAC. 이번에 못 잡아도(DHCP는 기회성) 되살려 보여 준다
+    public var rememberedMAC: MACAddress?
     /// NetBIOS 답에 든 MAC
     public var netbiosMAC: MACAddress?
     /// MAC 앞자리로 찾은 제조사(앱이 OUI 표로 채운다)
@@ -78,6 +80,11 @@ public struct Device: Hashable, Sendable, Identifiable {
     /// 알게 된 MAC과 출처. 공유기 ARP 표 → 이 기기 ARP 캐시 → 기기에 직접 물은 것(SNMP·API) → 기기가 광고한 것
     /// (NetBIOS·AirPlay·Bonjour) → 기기 ID·IPv6에서 거꾸로 푼 것 순으로 믿는다
     public var mac: (address: MACAddress, source: MACSource)? {
+        observedMAC ?? rememberedMAC.map { (address: $0, source: .remembered) }
+    }
+
+    /// 이번에 실제로 알아낸 MAC(기억된 것 말고). 이게 있으면 기억해 두고, 없으면 기억된 것을 되살린다.
+    public var observedMAC: (address: MACAddress, source: MACSource)? {
         let candidates: [(MACAddress?, MACSource)] = [
             (routerMAC, .router), (localARPMAC, .localARP), (dhcpMAC, .dhcp),
             (reportedMACs[.deviceSNMP], .deviceSNMP), (reportedMACs[.deviceAPI], .deviceAPI),
@@ -269,8 +276,12 @@ public struct DeviceIdentity: Hashable, Sendable, Codable {
 
     /// 믿을 만한 순서의 열쇠들. IP 열쇠는 네트워크마다 다른 기기일 수 있어 `network`로 구분한다.
     public func keys(network: String) -> [String] {
+        (mac.map { ["mac:\($0)"] } ?? []) + stableKeys(network: network)
+    }
+
+    /// MAC을 뺀 안정 열쇠(이름·IP). 기억된 MAC을 이름으로 찾을 때 쓴다(MAC으로 MAC을 찾으면 순환이니까).
+    public func stableKeys(network: String) -> [String] {
         [
-            mac.map { "mac:\($0)" },
             bonjourName.map { "bonjour:\($0.lowercased())" },
             hostName.map { "host:\($0.lowercased())" },
             "ip:\(network)/\(address)",
@@ -292,6 +303,15 @@ public protocol AliasStoring: Sendable {
     func alias(forKeys keys: [String]) -> String?
     /// 별명을 저장한다(nil이면 지운다). 같은 기기의 다른 열쇠에 남은 옛 별명도 지운다
     func setAlias(_ alias: String?, forKeys keys: [String])
+}
+
+/// 이름(mDNS·Bonjour)으로 MAC을 기억해 둔다. DHCP는 기회성이라 한 번 잡은 MAC을 다음 스캔에도 되살리려고.
+/// 앱은 UserDefaults, 시험은 메모리. 열쇠는 `DeviceIdentity.stableKeys`(MAC을 뺀 이름·IP).
+public protocol MACMemoryStoring: Sendable {
+    /// 열쇠들 중 처음 걸리는, 기억해 둔 MAC
+    func recall(forKeys keys: [String]) -> MACAddress?
+    /// 이 MAC을 그 기기의 모든 안정 열쇠에 기억해 둔다(이름이 바뀌어도 다른 열쇠로 찾게)
+    func remember(_ mac: MACAddress, forKeys keys: [String])
 }
 
 extension NetworkSnapshot {
