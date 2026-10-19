@@ -443,6 +443,7 @@ final class ScanViewModel {
                 await readBanners(of: devices.values.filter { !$0.isSelf && $0.banners.isEmpty })
                 await routerTable
                 await probes
+                await harvestNeighbors(on: network)   // IPv6 이웃 탐색(NDP)으로 Apple 기기 MAC까지 — 매 스캔 자동
             }
             // 새 주소가 더 안 들어오니 남은 이름 조회만 끝내면 된다
             lookupQueue.finish()
@@ -592,26 +593,26 @@ final class ScanViewModel {
     private func harvestNeighbors(on network: NetworkSnapshot) async {
         let targets = devices.values.flatMap(\.ipv6Addresses).filter(\.isLinkLocal)
         let finding = await neighborProber.harvest(on: network.interfaceName, provoking: targets, for: .seconds(4))
-        var applied = 0
         for (ip6, mac) in finding.found {
             guard let address = devices.first(where: { $0.value.ipv6Addresses.contains(ip6) })?.key else { continue }
             if devices[address]?.neighborMAC != mac {
                 devices[address]?.neighborMAC = mac
                 refresh(address)
-                applied += 1
             }
         }
-        neighborStatus = Self.neighborMessage(blocked: finding.blocked, found: finding.found.count, applied: applied)
+        // 이번 판은 캐시가 데워져 0개여도, 그동안 ND로 잡은 전체 개수를 보여 준다(마지막 판만 보여 혼란스럽던 것 고침)
+        let total = devices.values.filter { $0.neighborMAC != nil }.count
+        neighborStatus = Self.neighborMessage(blocked: finding.blocked, total: total)
     }
 
-    static func neighborMessage(blocked: Bool, found: Int, applied: Int) -> String {
+    static func neighborMessage(blocked: Bool, total: Int) -> String {
+        if total > 0 {
+            return "IPv6 이웃 탐색: ND로 MAC \(total)개를 직접 받았어요! 공유기 없이 얻은 진짜 MAC이에요."
+        }
         if blocked {
-            return "IPv6 이웃 탐색(실험): iOS가 ICMPv6 소켓을 막았어요 — 이 길은 불가."
+            return "IPv6 이웃 탐색: iOS가 ICMPv6 소켓을 막았어요 — 이 길은 불가."
         }
-        if found > 0 {
-            return "IPv6 이웃 탐색(실험): ND로 MAC \(found)개를 받았어요! (기기에 \(applied)개 붙임) 공유기 없이 얻은 거예요."
-        }
-        return "IPv6 이웃 탐색(실험): 소켓은 열렸는데 ND 응답 0개 — iOS가 ND를 앱에 안 넘기는 것 같아요."
+        return "IPv6 이웃 탐색: 소켓은 열렸는데 아직 0개 — 핑에 응답하며 ND를 쏠 때 잡혀요."
     }
 
     /// 공유기(다음으로 관리형 AP 몇 대)에 SNMP로 ARP 표를 물어 MAC을 채운다. 탐색엔 안 잡혔지만

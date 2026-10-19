@@ -203,6 +203,7 @@ iOS(그리고 안드로이드 10 이상)는 앱에 다른 기기의 MAC을 주�
 | --- | --- | --- |
 | 공유기 ARP 표(SNMP) | 모든 기기(공유기가 SNMP를 켰을 때) | 게이트웨이·관리형 AP에 ipNetToMediaPhysAddress GetBulk |
 | DHCP 요청(스니핑) | 모든 기기(붙거나 갱신하는 순간, 폰 포함) — **공유기 없이** | 앱이 떠 있는 동안 :67·:68로 오는 DHCP 브로드캐스트의 chaddr. 공유기가 아니라 기기 자신이 알린다(아래 "DHCP 스니핑") |
+| IPv6 이웃 탐색(NDP) | 모든 IPv6 기기(아이패드·아이폰 포함) — **공유기 없이, 온디맨드** | all-nodes(ff02::1)·링크로컬에 ICMPv6 핑을 쏴 상대가 NS/NA로 자기 MAC을 알리게 유도하고, SOCK_DGRAM ICMPv6 소켓으로 받는다(`NeighborProber`, 실기기에서 작동 확인) |
 | 기기 SNMP(인터페이스 MAC) | 프린터·NAS·관리형 AP·스위치 | 그 기기에 ipAdEntIfIndex.<IP> → ifPhysAddress.<번호> Get(UDP 161, 읽기만) |
 | 기기 정보 API | Roku, 삼성 TV(2016~), Hue 브리지, Shelly | `:8060/query/device-info`의 `wifi-mac`·`ethernet-mac`, `:8001/api/v2/`의 `device.wifiMac`, `/api/config`의 `mac`, `/shelly`의 `mac`(Hue·Shelly는 80 포트가 열린 기기만) |
 | NetBIOS 응답 | 윈도우 PC | NBSTAT 답의 unit ID |
@@ -225,7 +226,8 @@ MAC을 써서, 어디서 얻든 제조사가 안 나온다(이건 MAC을 읽는 
 - **M > 0** — 이 기기·iOS 버전은 ARP 캐시에 진짜 MAC을 흘린다. 그러면 공유기 없이도 그만큼 MAC이 채워진다(폰이면 무작위 MAC).
 - **M = 0, K > 0** — iOS가 항목은 주되 MAC을 전부 `02:00:…`으로 가린 게 **그 기기에서 입증된 것**. 그래도 공유기 SNMP나 아래 **DHCP 스니핑**으로는 얻을 수 있다.
 
-(IPv6 이웃(NDP) 캐시도 ARP와 별개로 같은 식으로 측정한다 — iOS가 v6 쪽도 가리는지 따로 확인. 실기기에선 둘 다 가렸다.)
+(IPv6 이웃(NDP) **캐시**도 ARP와 별개로 같은 식으로 측정한다 — 실기기에선 둘 다 가렸다. 다만 **캐시**가 가려진 것일 뿐,
+살아 있는 NS/NA 메시지를 직접 받는 **능동 이웃 탐색**(위 표의 "IPv6 이웃 탐색")은 통한다 — 실기기에서 아이패드 MAC을 받았다.)
 
 즉 "공유기 없이 다른 기기의 MAC"이 되는지 안 되는지를, 추측이 아니라 그 기기의 실제 측정값으로 알려 준다.
 
