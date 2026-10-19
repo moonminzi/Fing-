@@ -47,6 +47,23 @@ struct ScanControl: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if !scan.devices.isEmpty {
+                    Button {
+                        scan.collectMACs()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Label("MAC 집중 수집", systemImage: "antenna.radiowaves.left.and.right")
+                            if scan.isCollectingMACs {
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(scan.isCollectingMACs)
+                }
             }
         }
         .padding(.vertical, 4)
@@ -69,6 +86,12 @@ struct ScanControl: View {
             let coverage = scan.macCoverage
             if coverage.total > 0 {
                 text += "\nMAC을 아는 기기 \(coverage.known)/\(coverage.total)대"
+            }
+            let missing = scan.devicesMissingMAC
+            if !missing.isEmpty {
+                let names = missing.prefix(4).map { $0.name ?? $0.address.description }.joined(separator: ", ")
+                text += "\nMAC 없는 기기 \(missing.count)대: \(names)\(missing.count > 4 ? " 외" : "")"
+                    + " — 그 기기들 Wi-Fi(비행기모드)를 껐다 켜면 DHCP로 잡혀요"
             }
             if let routerTable = scan.routerTableStatus {
                 text += "\n" + routerTable

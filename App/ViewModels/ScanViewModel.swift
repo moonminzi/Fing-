@@ -80,6 +80,10 @@ final class ScanViewModel {
     @ObservationIgnored private var scanTask: Task<Void, Never>?
     /// DHCP 스니핑 리스너. 앱이 떠 있는 동안 계속 돌고(백그라운드 가면 멈춤), 잡을 때마다 상태를 갱신한다
     @ObservationIgnored private var dhcpTask: Task<Void, Never>?
+    /// "MAC 집중 수집": 전체 재스캔 없이 no-login 수집기를 한 번에 다시 돌리는 작업
+    @ObservationIgnored private var collectTask: Task<Void, Never>?
+    /// 집중 수집이 도는 중인지(버튼 진행 표시)
+    private(set) var isCollectingMACs = false
     @ObservationIgnored private var scannedSubnet: Subnet?
     /// 새 주소가 목록에 들어올 때마다 이름 조회로 넘긴다
     @ObservationIgnored private var lookupQueue: AsyncStream<IPv4>.Continuation?
@@ -168,6 +172,11 @@ final class ScanViewModel {
         return (others.filter { $0.mac != nil }.count, others.count)
     }
 
+    /// 아직 MAC을 못 잡은 기기(이 기기 제외). 재연결로 DHCP에 잡을 대상을 안내하는 데 쓴다
+    var devicesMissingMAC: [Device] {
+        devices.values.filter { !$0.isSelf && $0.mac == nil }.sorted(by: sortOrder)
+    }
+
     /// 이 네트워크를 처음 스캔하는 중(그래서 "새 기기"를 표시하지 않는다)
     var isFirstScanOfNetwork: Bool {
         scannedNetwork != nil && baseline.previousScans == 0
@@ -176,6 +185,8 @@ final class ScanViewModel {
     func start(on network: NetworkSnapshot) {
         scanTask?.cancel()
         dhcpTask?.cancel()
+        collectTask?.cancel()
+        isCollectingMACs = false
         if scannedSubnet != network.subnet {
             devices = [:]
         }
@@ -549,6 +560,24 @@ final class ScanViewModel {
             return "DHCP 스니핑: 기기가 붙거나 갱신할 때 MAC \(caught)개를 직접 잡았어요! 공유기 없이 얻은 거예요."
         }
         return "DHCP 스니핑: 듣는 중(iOS 허용) — 폰 하나의 Wi-Fi(또는 비행기모드)를 껐다 켜면 그 순간 잡혀요."
+    }
+
+    /// MAC 집중 수집: 로그인 없이 가능한 수집기를 전체 재스캔 없이 한 번에 다시 돌린다 —
+    /// 이 기기 ARP·NDP 캐시, 공유기·기기 SNMP, 기기 정보 API. DHCP는 상시 듣기를 다시 켜 둔다.
+    /// 아직 MAC을 못 잡은 기기를 마저 채우려는 것(대부분은 그 기기를 Wi-Fi 재연결해야 DHCP로 잡힌다).
+    func collectMACs() {
+        guard let network = scannedNetwork, !isRunning, !isCollectingMACs else { return }
+        collectTask?.cancel()
+        startDHCPSniff(on: network)
+        isCollectingMACs = true
+        collectTask = Task {
+            applyLocalARP(on: network)
+            async let router: Void = readRouterTable(on: network)
+            async let probes: Void = probeMACs()
+            await router
+            await probes
+            isCollectingMACs = false
+        }
     }
 
     /// 공유기(다음으로 관리형 AP 몇 대)에 SNMP로 ARP 표를 물어 MAC을 채운다. 탐색엔 안 잡혔지만
