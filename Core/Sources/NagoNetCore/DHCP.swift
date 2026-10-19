@@ -127,6 +127,7 @@ public struct DHCPSniffer: DHCPSniffing {
 
         var reuse: Int32 = 1
         _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuse, socklen_t(MemoryLayout<Int32>.size))   // 재스캔 겹침 대비
         var broadcast: Int32 = 1
         _ = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout<Int32>.size))
         #if canImport(Darwin)

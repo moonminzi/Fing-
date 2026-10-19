@@ -480,8 +480,8 @@ final class ScanViewModel {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
-    /// 듣는 창(기기가 Wi-Fi에 새로 붙거나 갱신할 시간을 주려고 넉넉히)
-    static let dhcpListenWindow: Duration = .seconds(25)
+    /// 듣는 창(기기가 Wi-Fi에 새로 붙거나 갱신할 시간을 주려고 넉넉히 — 스캔 도는 동안 폰을 껐다 켤 틈)
+    static let dhcpListenWindow: Duration = .seconds(120)
 
     /// DHCP 요청을 스캔 도는 동안 엿듣는다(실험). 기기가 Wi-Fi에 붙거나 갱신하면 그 chaddr MAC을 잡는다 — 공유기·비번 없이.
     /// 고정 창 뒤 스스로 끝난다. 새 스캔이 시작되면 이전 리스너는 취소돼 결과를 덮어쓰지 않는다.
@@ -523,7 +523,7 @@ final class ScanViewModel {
         if caught > 0 {
             return "DHCP 스니핑(실험): 기기가 붙거나 갱신할 때 MAC \(caught)개를 직접 잡았어요! 공유기 없이 얻은 거예요."
         }
-        return "DHCP 스니핑(실험): 들었지만 0개(그새 새로 붙거나 갱신한 기기가 없었어요). 폰을 Wi-Fi에 새로 연결하면 그때 잡혀요."
+        return "DHCP 스니핑(실험): 소켓은 열렸는데(iOS가 허용) 0개 — 스캔하는 2분 동안 폰 하나의 Wi-Fi를 껐다 켜면 그 순간 chaddr가 잡혀요."
     }
 
     /// 공유기(다음으로 관리형 AP 몇 대)에 SNMP로 ARP 표를 물어 MAC을 채운다. 탐색엔 안 잡혔지만
