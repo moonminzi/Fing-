@@ -67,10 +67,10 @@ public enum Interfaces {
                   addr.pointee.sa_family == ARPCache.linkFamily else { continue }   // AF_LINK(18): sockaddr_dl
             let length = Int(addr.pointee.sa_len)
             let raw = UnsafeRawPointer(addr)
-            let bytes = (0..<length).map { raw.load(fromByteOffset: $0, as: UInt8.self) }
-            if let mac = ARPCache.rawLinkAddress(bytes, at: 0, length: length).flatMap(MACAddress.init) {
-                return mac
-            }
+            var bytes = [UInt8](repeating: 0, count: length)
+            for offset in 0..<length { bytes[offset] = raw.load(fromByteOffset: offset, as: UInt8.self) }
+            guard let linkBytes = ARPCache.rawLinkAddress(bytes, at: 0, length: length) else { continue }
+            if let mac = MACAddress(linkBytes) { return mac }
         }
         return nil
     }
