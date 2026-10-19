@@ -40,7 +40,8 @@ Core/                       NagoNetCore: UI·Network 프레임워크 없음 → 
                             ScanHistoryStoring 프로토콜
   ICMP.swift                SOCK_DGRAM ICMP 핑(Pinging 프로토콜), 에코 메시지·체크섬, 핑 통계
   MAC.swift                 MAC 주소(무작위 주소 판별), OUI 제조사 표
-  SSDP.swift                SSDP 유니캐스트 검색·UPnP 설명 XML 해석, HTTPFetching 프로토콜
+  SSDP.swift                SSDP 유니캐스트 검색·UPnP 설명 XML 해석·serviceList/controlURL 파싱, HTTPFetching(get/post)
+  UPnPControl.swift         (인가된 자기 네트워크 전용) UPnP SOAP 제어 — IGD 포트매핑 정찰/열기/삭제, DLNA 렌더러 재생
   SNMP.swift                SNMPv2c(BER) GetBulk, 공유기 ARP 표 읽기(ARPTableReader)
   ARPTable.swift            이 기기 ARP 캐시 읽기(sysctl NET_RT_FLAGS+RTF_LLINFO), ARPCacheReading
   NDPSpoof.swift            (인가된 실험 전용) IPv6 이웃 광고 위조 → 이웃 캐시 독 묻히기, NeighborAdvertising
@@ -262,6 +263,28 @@ Override 플래그를 켜 보내면 받는 쪽은 자기 이웃 캐시의 해당
   홉 한계 255를 올려 보내야(RFC 4861 §11.2) 받는 쪽이 NA를 받아 준다.
 - `NDPSpoofer`가 이웃 캐시가 식지 않게 주기적으로 다시 보내고, 끝낼 때 `restore(...)`로 진짜 MAC을 다시 알려 캐시를
   원복한다. 포이즈닝 결과는 기존 NDP **읽기**(`NeighborDiscovery`)로 바로 확인할 수 있다.
+
+#### UPnP/SOAP 제어 — iOS에서 실제로 동작하는 능동 기법 (인가된 자기 네트워크·CTF 전용)
+
+> ⚠️ **인가받은 자기 네트워크에서만.** UPnP IGD·DLNA는 설계상 무인증이라 같은 LAN의 SOAP 호출이 그대로 수행된다 —
+> 실제로 공유기 방화벽을 바꾸고 기기를 제어하므로, 소유·관리하거나 명시적으로 허락받은 환경(랩·CTF)에서만 쓴다.
+
+ARP·NDP **스푸핑 송신**은 iOS 커널이 막지만(raw 필요 또는 EPERM), **UPnP 제어는 평범한 유니캐스트 TCP/HTTP POST라
+샌드박스 제약을 전혀 받지 않고 iOS에서 entitlement 없이 실제로 나간다.** 발견(SSDP 유니캐스트 M-SEARCH)과 HTTP 전송
+(`BannerGrabber`의 스트림)이 이미 있어, serviceList 파서·SOAP 빌더·`post()` 래퍼만 더했다.
+
+- **정찰(안전, 기본 노출)**: 공유기 IGD에 `GetExternalIPAddress`(공인 WAN IP)와 `GetGenericPortMappingEntry`(등록된
+  포트포워딩 전수 열거)를 SOAP로 묻는다. 아무것도 바꾸지 않는다.
+- **변경(인가 확인 뒤)**: `AddPortMapping`으로 공인 포트를 이 기기로 여는 TCP 포워딩을 만들고(설명 NAGO-NET-TEST·1시간
+  임대) `DeletePortMapping`으로 롤백한다. DLNA 렌더러(삼성·LG·TCL·소니 TV·Sonos)엔 `SetAVTransportURI`+`Play`로 임의
+  URL을 재생시킨다(화면·음성 탈취/blind SSRF 데모 — Chromecast·Roku는 UPnP가 아니라 불가).
+- `Core/UPnPControl.swift`의 SOAP 엔벨로프·응답 파싱과 `SSDP.services`/`controlTarget`(발견한 **그 기기로만** POST 하는
+  same-host 가드)은 순수 로직이라 Linux `swift test`로 검증된다(`UPnPControlTests`). UI는 상세 화면의 공유기 카드
+  ("UPnP 제어(공유기)")와 TV·스피커 카드("UPnP 제어(DLNA 렌더러)")에 붙고, 변경 액션은 인가 확인 시트 뒤에 둔다.
+
+하드닝된 공유기는 `AddPortMapping`의 내부 클라이언트를 호출자 자신으로만 제한하기도 하고, UPnP가 꺼진 기기는 정찰도
+안 된다(IGD 못 찾음으로 정직하게 표시). ICMPv6 송신은 echo·NI 쿼리만 커널이 허용하므로 NDP 교란은 랩 전용으로 남는다
+(위 "NDP 이웃 캐시 교란" 참고) — iOS에서 "실제로 되는" 능동 기법은 이 UPnP 제어다.
 
 ### 기기 깨우기 (Wake-on-LAN)
 

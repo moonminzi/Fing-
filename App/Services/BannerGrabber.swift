@@ -36,6 +36,27 @@ struct HTTPFetcher: HTTPFetching {
 
     func get(host: IPv4, port: UInt16, path: String, tls: Bool) async -> [UInt8]? {
         let request = Array("GET \(path) HTTP/1.0\r\nHost: \(host):\(port)\r\nUser-Agent: NAGO-NET\r\nConnection: close\r\n\r\n".utf8)
+        return await send(request, host: host, port: port, tls: tls)
+    }
+
+    /// UPnP SOAP 제어용 POST. 머리(Content-Type: text/xml, SOAPAction, Content-Length) + 본문을 한 요청으로 보낸다.
+    func post(host: IPv4, port: UInt16, path: String, tls: Bool, soapAction: String, body: [UInt8]) async -> [UInt8]? {
+        var request = Array("""
+        POST \(path) HTTP/1.0\r
+        Host: \(host):\(port)\r
+        User-Agent: NAGO-NET\r
+        Content-Type: text/xml; charset="utf-8"\r
+        SOAPAction: \(soapAction)\r
+        Content-Length: \(body.count)\r
+        Connection: close\r
+        \r
+
+        """.utf8)
+        request += body
+        return await send(request, host: host, port: port, tls: tls)
+    }
+
+    private func send(_ request: [UInt8], host: IPv4, port: UInt16, tls: Bool) async -> [UInt8]? {
         let read = StreamRead(host: host, port: port, tls: tls, request: request, stop: .complete)
         let output = await withTaskCancellationHandler {
             await read.run(timeout: timeout)

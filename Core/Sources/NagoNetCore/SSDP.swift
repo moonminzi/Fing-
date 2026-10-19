@@ -121,10 +121,67 @@ public enum SSDP {
         let unwrapped = raw.replacingOccurrences(of: "<![CDATA[", with: "").replacingOccurrences(of: "]]>", with: "")
         return ServiceBanner.clean(ServiceBanner.decodeEntities(unwrapped))
     }
+
+    /// 설명 XML의 `<service>` 하나: 종류와 제어/설명 주소. SOAP 제어(`UPnPControl`)의 과녁이 된다.
+    public struct UPnPService: Hashable, Sendable {
+        /// "urn:schemas-upnp-org:service:WANIPConnection:1" 같은 서비스 종류
+        public let serviceType: String
+        /// SOAP 액션을 POST할 주소(상대 경로일 수 있음 → `controlTarget`으로 푼다)
+        public let controlURL: String
+        /// 서비스 명세(SCPD) 주소(있으면)
+        public let scpdURL: String?
+
+        public init(serviceType: String, controlURL: String, scpdURL: String? = nil) {
+            self.serviceType = serviceType
+            self.controlURL = controlURL
+            self.scpdURL = scpdURL
+        }
+    }
+
+    /// 설명 XML의 **모든** `<service>` 블록에서 (serviceType, controlURL, SCPDURL)을 꺼낸다.
+    /// `element`는 첫 매치만 보므로, 여기서는 `<service>…</service>`를 차례로 끊어 블록마다 따로 읽는다.
+    public static func services(in xml: String) -> [UPnPService] {
+        var result: [UPnPService] = []
+        var cursor = xml.startIndex
+        while let open = xml.range(of: "<service>", options: .caseInsensitive, range: cursor..<xml.endIndex),
+              let close = xml.range(of: "</service>", options: .caseInsensitive, range: open.upperBound..<xml.endIndex) {
+            let block = String(xml[open.upperBound..<close.lowerBound])
+            if let type = element("serviceType", in: block), let control = element("controlURL", in: block) {
+                result.append(UPnPService(serviceType: type, controlURL: control, scpdURL: element("SCPDURL", in: block)))
+            }
+            cursor = close.upperBound
+        }
+        return result
+    }
+
+    /// controlURL(상대 또는 절대)을 설명 XML 주소(base)에 붙여 (포트, 경로, HTTPS인지)로 푼다.
+    /// 발견한 그 기기(expectedHost)가 아닌 주소로는 절대 보내지 않게 막는다(`descriptionTarget`과 같은 가드).
+    public static func controlTarget(controlURL: String, base location: String, expectedHost: IPv4) -> (port: UInt16, path: String, tls: Bool)? {
+        let resolved: URL?
+        if let absolute = URL(string: controlURL), absolute.scheme != nil {
+            resolved = absolute
+        } else {
+            resolved = URL(string: location).flatMap { URL(string: controlURL, relativeTo: $0)?.absoluteURL }
+        }
+        guard let url = resolved, let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host, IPv4(host) == expectedHost else { return nil }
+        let tls = scheme == "https"
+        let port = url.port.flatMap { UInt16(exactly: $0) } ?? (tls ? 443 : 80)
+        var path = url.path.isEmpty ? "/" : url.path
+        if let query = url.query { path += "?" + query }
+        return (port, path, tls)
+    }
 }
 
-/// HTTP GET 한 번(UPnP 설명 XML 읽기용). 앱은 NWConnection으로, 시험은 가짜로.
+/// HTTP GET/POST(UPnP 설명 XML 읽기·SOAP 제어용). 앱은 NWConnection으로, 시험은 가짜로.
 public protocol HTTPFetching: Sendable {
     /// 응답 전체(머리 + 몸). 실패하면 nil
     func get(host: IPv4, port: UInt16, path: String, tls: Bool) async -> [UInt8]?
+    /// SOAP 액션을 POST한다(UPnP 제어). `soapAction`은 따옴표까지 포함한 헤더값. 응답 전체(머리+몸), 실패하면 nil.
+    func post(host: IPv4, port: UInt16, path: String, tls: Bool, soapAction: String, body: [UInt8]) async -> [UInt8]?
+}
+
+public extension HTTPFetching {
+    /// 기본값: POST 미지원(기존 GET 전용 구현·가짜가 그대로 쓰이게). 제어가 필요한 쪽만 override 한다.
+    func post(host: IPv4, port: UInt16, path: String, tls: Bool, soapAction: String, body: [UInt8]) async -> [UInt8]? { nil }
 }
