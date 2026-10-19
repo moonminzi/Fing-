@@ -30,12 +30,21 @@ struct DHCPTests {
         #expect(sighting?.messageType == 3)
     }
 
-    @Test func ignoresServerRepliesAndTooShort() {
-        var reply = request(mac: [1, 2, 3, 4, 5, 6], requestedIP: nil, hostName: nil)
-        reply[0] = 2   // op = BOOTREPLY(서버 응답) — 우리가 노리는 게 아니다
-        #expect(DHCP.parse(reply) == nil)
+    @Test func parsesServerReplyChaddrViaYiaddr() {
+        // 서버 응답(op=2, :68)에도 chaddr에 기기 MAC이 있고, 할당 IP는 yiaddr(offset 16)에 있다
+        var reply = request(mac: [0x3C, 0x7C, 0x3F, 7, 8, 9], requestedIP: nil, hostName: nil)
+        reply[0] = 2
+        reply[16] = 192; reply[17] = 168; reply[18] = 0; reply[19] = 55   // yiaddr = 192.168.0.55
+        #expect(DHCP.parse(reply)?.mac == MACAddress([0x3C, 0x7C, 0x3F, 7, 8, 9]))
+        #expect(DHCP.parse(reply)?.requestedIP == IPv4(192, 168, 0, 55))
+    }
+
+    @Test func rejectsTooShortAndNonEthernet() {
         #expect(DHCP.parse([]) == nil)
-        #expect(DHCP.parse([UInt8](repeating: 0, count: 100)) == nil)
+        #expect(DHCP.parse([UInt8](repeating: 0, count: 100)) == nil)   // 너무 짧음
+        var notEthernet = request(mac: [1, 2, 3, 4, 5, 6], requestedIP: nil, hostName: nil)
+        notEthernet[1] = 6   // htype ≠ 1(이더넷 아님)
+        #expect(DHCP.parse(notEthernet) == nil)
     }
 
     @Test func fallsBackToCiaddrWithoutRequestedOption() {

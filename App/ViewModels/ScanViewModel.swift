@@ -76,7 +76,7 @@ final class ScanViewModel {
     @ObservationIgnored private var scannedNetwork: NetworkSnapshot?
     @ObservationIgnored private var portScanTasks: [IPv4: Task<Void, Never>] = [:]
     @ObservationIgnored private var scanTask: Task<Void, Never>?
-    /// DHCP 스니핑(실험) 리스너. 스캔과 함께 돌고 고정 창(약 25초) 뒤 스스로 끝난다
+    /// DHCP 스니핑 리스너. 앱이 떠 있는 동안 계속 돌고(백그라운드 가면 멈춤), 잡을 때마다 상태를 갱신한다
     @ObservationIgnored private var dhcpTask: Task<Void, Never>?
     @ObservationIgnored private var scannedSubnet: Subnet?
     /// 새 주소가 목록에 들어올 때마다 이름 조회로 넘긴다
@@ -230,6 +230,7 @@ final class ScanViewModel {
     /// 앱이 백그라운드로 갈 때: 포트 스캔은 멈추고, 진행 중인 스캔은 iOS가 주는 시간(약 30초) 동안 마무리한다.
     /// 시간이 다 되면 멈춘다(끝까지 못 마친 스캔은 기록하지 않는다).
     func enterBackground() {
+        dhcpTask?.cancel()   // 백그라운드에선 소켓을 놓는다(계속 못 듣는다)
         for address in Array(portScanTasks.keys) {
             cancelPortScan(of: address)
         }
@@ -244,6 +245,10 @@ final class ScanViewModel {
 
     func enterForeground() {
         endBackgroundTask()
+        // 스캔이 끝난 상태로 돌아오면 DHCP 듣기를 이어 간다(스캔 중이면 스캔이 알아서 띄운다)
+        if let network = scannedNetwork, !isRunning, AppSettings.dhcpSniffEnabled {
+            startDHCPSniff(on: network)
+        }
     }
 
     private func endBackgroundTask() {
@@ -480,11 +485,11 @@ final class ScanViewModel {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
-    /// 듣는 창(기기가 Wi-Fi에 새로 붙거나 갱신할 시간을 주려고 넉넉히 — 스캔 도는 동안 폰을 껐다 켤 틈)
-    static let dhcpListenWindow: Duration = .seconds(120)
+    /// 앱이 떠 있는 동안 계속 듣는다(백그라운드 가면 멈춤). 안전 상한만 길게 둔다
+    static let dhcpListenWindow: Duration = .seconds(1800)
 
-    /// DHCP 요청을 스캔 도는 동안 엿듣는다(실험). 기기가 Wi-Fi에 붙거나 갱신하면 그 chaddr MAC을 잡는다 — 공유기·비번 없이.
-    /// 고정 창 뒤 스스로 끝난다. 새 스캔이 시작되면 이전 리스너는 취소돼 결과를 덮어쓰지 않는다.
+    /// DHCP 요청을 엿듣는다. 기기가 Wi-Fi에 붙거나 갱신하면 그 chaddr MAC을 잡는다 — 공유기·비번 없이.
+    /// 잡을 때마다 상태를 바로 갱신한다. 새 스캔이 시작되면 이전 리스너는 취소된다.
     private func startDHCPSniff(on network: NetworkSnapshot) {
         dhcpTask?.cancel()
         guard AppSettings.dhcpSniffEnabled else { dhcpStatus = nil; return }
@@ -492,17 +497,19 @@ final class ScanViewModel {
         let sniffer = dhcpSniffer
         let window = Self.dhcpListenWindow
         dhcpTask = Task {
-            var blocked = false
             var caught = 0
             for await event in sniffer.events(on: network.interfaceName, for: window) {
                 if Task.isCancelled { break }
                 switch event {
-                case .listening: break
-                case .blocked: blocked = true
-                case .sighting(let sighting): if applyDHCP(sighting, network: network) { caught += 1 }
+                case .listening:
+                    dhcpStatus = Self.dhcpMessage(blocked: false, caught: 0)
+                case .blocked:
+                    dhcpStatus = Self.dhcpMessage(blocked: true, caught: 0)
+                case .sighting(let sighting):
+                    if applyDHCP(sighting, network: network) { caught += 1 }
+                    dhcpStatus = Self.dhcpMessage(blocked: false, caught: caught)
                 }
             }
-            if !Task.isCancelled { dhcpStatus = Self.dhcpMessage(blocked: blocked, caught: caught) }
         }
     }
 
@@ -518,12 +525,12 @@ final class ScanViewModel {
     /// DHCP 스니핑 결과를 사람이 읽을 한 줄로. 막혔는지/잡았는지 측정값 그대로 알린다.
     static func dhcpMessage(blocked: Bool, caught: Int) -> String {
         if blocked {
-            return "DHCP 스니핑(실험): iOS가 소켓(:67)을 막아 못 들었어요 — 이 기기에선 이 길은 불가."
+            return "DHCP 스니핑: iOS가 소켓(:67·:68)을 막아 못 들었어요 — 이 기기에선 이 길은 불가."
         }
         if caught > 0 {
-            return "DHCP 스니핑(실험): 기기가 붙거나 갱신할 때 MAC \(caught)개를 직접 잡았어요! 공유기 없이 얻은 거예요."
+            return "DHCP 스니핑: 기기가 붙거나 갱신할 때 MAC \(caught)개를 직접 잡았어요! 공유기 없이 얻은 거예요."
         }
-        return "DHCP 스니핑(실험): 소켓은 열렸는데(iOS가 허용) 0개 — 스캔하는 2분 동안 폰 하나의 Wi-Fi를 껐다 켜면 그 순간 chaddr가 잡혀요."
+        return "DHCP 스니핑: 듣는 중(iOS 허용) — 폰 하나의 Wi-Fi(또는 비행기모드)를 껐다 켜면 그 순간 잡혀요."
     }
 
     /// 공유기(다음으로 관리형 AP 몇 대)에 SNMP로 ARP 표를 물어 MAC을 채운다. 탐색엔 안 잡혔지만
