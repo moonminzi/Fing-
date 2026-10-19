@@ -645,11 +645,21 @@ final class ScanViewModel {
         let targets = devices.values.flatMap(\.ipv6Addresses).filter(\.isLinkLocal)
         let finding = await neighborProber.harvest(on: network.interfaceName, provoking: targets, for: .seconds(4))
         for (ip6, mac) in finding.found {
-            guard let address = devices.first(where: { $0.value.ipv6Addresses.contains(ip6) })?.key else { continue }
+            // 그 IPv6를 이미 가진 기기, 없으면 그 MAC을 아는 기기에 붙인다(ND가 처음 알려 준 fe80::라도 짝지어진다)
+            let address = devices.first(where: { $0.value.ipv6Addresses.contains(ip6) })?.key
+                ?? devices.first(where: { $0.value.mac?.address == mac })?.key
+            guard let address else { continue }
+            var changed = false
+            // 발견한 링크로컬(fe80::)을 기기에 저장해 둔다 — 이후 NDP 스푸핑 등 그 주소가 필요한 기능이 쓸 수 있게
+            if ip6.isLinkLocal, devices[address]?.ipv6Addresses.contains(ip6) == false {
+                devices[address]?.ipv6Addresses.append(ip6)
+                changed = true
+            }
             if devices[address]?.neighborMAC != mac {
                 devices[address]?.neighborMAC = mac
-                refresh(address)
+                changed = true
             }
+            if changed { refresh(address) }
         }
         // 이번 판은 캐시가 데워져 0개여도, 그동안 ND로 잡은 전체 개수를 보여 준다(마지막 판만 보여 혼란스럽던 것 고침)
         let total = devices.values.filter { $0.neighborMAC != nil }.count
