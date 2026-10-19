@@ -175,7 +175,11 @@ public struct NDPSpoofRun: Sendable, Equatable {
 /// 진짜로 NA를 내보내는 쪽. `NeighborProber`와 같은 `SOCK_DGRAM` ICMPv6 소켓을 쓴다(raw 아님).
 ///
 /// NDP는 보내는 NA의 홉 한계(hop limit)가 255여야 받는 쪽이 받아 준다(RFC 4861 §11.2) — 그래서 255로 올린다.
-/// 체크섬은 ICMPv6 DGRAM이라 커널이 채운다. iOS가 echo 외 ICMPv6 송신을 막으면 `sendto`가 실패해 false다.
+/// 체크섬은 ICMPv6 DGRAM이라 커널이 채운다.
+///
+/// 단, 스톡(비루트) iOS·macOS 커널은 이 DGRAM 소켓의 송신을 echo request(128)와 NI 쿼리(139)로만 허용하고
+/// NA(136)·NS(135)는 EPERM으로 막는다(XNU `icmp6_dgram_send`). 그래서 `NeighborProber`의 echo 송신은 되지만
+/// 여기 NA 송신은 스톡 iOS에선 항상 실패(false)다 — 랩의 루트 맥이나 리눅스(CAP_NET_RAW)에서만 나간다.
 public struct SystemNeighborAdvertiser: NeighborAdvertising {
     public init() {}
 

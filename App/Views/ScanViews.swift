@@ -691,9 +691,9 @@ private struct WakeSection: View {
     }
 }
 
-/// 상세의 "보안 실험(인가된 테스트 전용)": IPv6 이웃 광고(NA)를 위조해 이 기기의 이웃 캐시에
-/// "게이트웨이 = 내 MAC"을 심어 중간자를 시도한다(ARP 스푸핑의 IPv6 사촌). iOS는 보통 막혀서,
-/// 되는지 실제로 측정해 한 줄로 보여 준다. 시작 전 인가 여부를 한 번 더 확인한다.
+/// 상세의 "보안 실험(인가된 테스트 전용)": 위조 IPv6 이웃 광고(NA)로 이 기기와 게이트웨이의
+/// 이웃 캐시를 가짜 MAC으로 덮어 연결을 교란(블랙홀) 시도하고, 송신이 되는지 실제로 측정해 한 줄로 보여 준다.
+/// 스톡 iOS 커널은 비루트 앱의 NA 송신을 막아(EPERM) 보통 '불가'로 나온다 — 실동작은 랩의 루트 맥·리눅스.
 private struct NeighborSpoofSection: View {
     let device: Device
     let scan: ScanViewModel
@@ -708,7 +708,7 @@ private struct NeighborSpoofSection: View {
                 confirming = true
             } label: {
                 HStack {
-                    Label("NDP 스푸핑 실험 (인가된 테스트)", systemImage: "antenna.radiowaves.left.and.right")
+                    Label("NDP 이웃 캐시 교란 (실험)", systemImage: "antenna.radiowaves.left.and.right")
                     Spacer()
                     if isRunning { ProgressView() }
                 }
@@ -722,10 +722,10 @@ private struct NeighborSpoofSection: View {
         } header: {
             Text("보안 실험")
         } footer: {
-            Text("소유·관리하거나 명시적으로 허락받은 네트워크·CTF에서만 쓰세요. 이 기기에 '게이트웨이는 내 MAC'이라는 위조 IPv6 이웃 광고를 몇 초간 보내고, 끝나면 캐시를 원복해요. iOS는 보통 송신·자기 MAC을 막아 '불가'로 나올 수 있어요.")
+            Text("소유·관리하거나 명시적으로 허락받은 네트워크·CTF에서만 쓰세요. 위조 IPv6 이웃 광고로 상대의 게이트웨이 캐시를 가짜 MAC으로 덮어 연결을 교란하고, 끝나면 원복해요. 스톡 iOS는 커널이 이 송신을 막아(EPERM) 보통 '불가'로 나와요 — 실제 동작은 랩의 루트 맥·리눅스에서 됩니다.")
         }
         .confirmationDialog("인가된 테스트 환경인가요?", isPresented: $confirming, titleVisibility: .visible) {
-            Button("NDP 스푸핑 시작", role: .destructive) { run() }
+            Button("교란 시작", role: .destructive) { run() }
             Button("취소", role: .cancel) {}
         } message: {
             Text("소유·관리하거나 명시적으로 허락받은 네트워크에서만 실행하세요.")

