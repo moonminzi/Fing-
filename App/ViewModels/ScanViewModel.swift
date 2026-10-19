@@ -52,6 +52,8 @@ final class ScanViewModel {
     private(set) var localARPStatus: String?
     /// DHCP 스니핑(실험) 결과 한 줄(공유기 없이 기기 MAC을 직접 잡았는지)
     private(set) var dhcpStatus: String?
+    /// IPv6 이웃 탐색(NDP, 실험) 결과 한 줄
+    private(set) var neighborStatus: String?
 
     /// 네트워크마다 스캐너를 만든다(핑을 그 Wi-Fi 인터페이스로 묶으려고)
     @ObservationIgnored private let makeScanner: (NetworkSnapshot) -> any NetworkScanning
@@ -72,6 +74,8 @@ final class ScanViewModel {
     @ObservationIgnored private let legacyAliases: any AliasStoring
     /// 이름으로 MAC을 기억해 둔다(DHCP가 기회성이라 Apple 기기 등은 한 번 잡으면 다음 스캔에도 되살린다)
     @ObservationIgnored private let macMemory: any MACMemoryStoring
+    /// IPv6 이웃 탐색(NDP)으로 찔러 MAC을 거둔다(실험)
+    @ObservationIgnored private let neighborProber: any NeighborProbing
     @ObservationIgnored private let access: any LocalNetworkAccessChecking
     /// 이번 스캔 중에 고친 별명(기록에는 바로 저장되지만 baseline은 스캔 시작 때 것이라 따로 든다)
     @ObservationIgnored private var aliasEdits: [IPv4: String?] = [:]
@@ -105,6 +109,7 @@ final class ScanViewModel {
         history: any ScanHistoryStoring,
         legacyAliases: any AliasStoring = AliasStore(),
         macMemory: any MACMemoryStoring = MACMemoryStore(),
+        neighborProber: any NeighborProbing = NeighborProber(),
         access: any LocalNetworkAccessChecking = LocalNetworkAccess()
     ) {
         self.makeScanner = makeScanner
@@ -120,6 +125,7 @@ final class ScanViewModel {
         self.history = history
         self.legacyAliases = legacyAliases
         self.macMemory = macMemory
+        self.neighborProber = neighborProber
         self.access = access
     }
 
@@ -576,8 +582,36 @@ final class ScanViewModel {
             async let probes: Void = probeMACs()
             await router
             await probes
+            await harvestNeighbors(on: network)
             isCollectingMACs = false
         }
+    }
+
+    /// IPv6 이웃 탐색(NDP) 실험: 알려진 링크로컬을 찔러 상대가 쏘는 NS/NA에서 MAC을 거둔다(공유기·비번 없이).
+    /// iOS가 ND를 앱 소켓에 넘겨주는지 실제로 측정한다. 되면 Apple 기기 MAC을 온디맨드로 얻을 수 있다.
+    private func harvestNeighbors(on network: NetworkSnapshot) async {
+        let targets = devices.values.flatMap(\.ipv6Addresses).filter(\.isLinkLocal)
+        let finding = await neighborProber.harvest(on: network.interfaceName, provoking: targets, for: .seconds(4))
+        var applied = 0
+        for (ip6, mac) in finding.found {
+            guard let address = devices.first(where: { $0.value.ipv6Addresses.contains(ip6) })?.key else { continue }
+            if devices[address]?.neighborMAC != mac {
+                devices[address]?.neighborMAC = mac
+                refresh(address)
+                applied += 1
+            }
+        }
+        neighborStatus = Self.neighborMessage(blocked: finding.blocked, found: finding.found.count, applied: applied)
+    }
+
+    static func neighborMessage(blocked: Bool, found: Int, applied: Int) -> String {
+        if blocked {
+            return "IPv6 이웃 탐색(실험): iOS가 ICMPv6 소켓을 막았어요 — 이 길은 불가."
+        }
+        if found > 0 {
+            return "IPv6 이웃 탐색(실험): ND로 MAC \(found)개를 받았어요! (기기에 \(applied)개 붙임) 공유기 없이 얻은 거예요."
+        }
+        return "IPv6 이웃 탐색(실험): 소켓은 열렸는데 ND 응답 0개 — iOS가 ND를 앱에 안 넘기는 것 같아요."
     }
 
     /// 공유기(다음으로 관리형 AP 몇 대)에 SNMP로 ARP 표를 물어 MAC을 채운다. 탐색엔 안 잡혔지만

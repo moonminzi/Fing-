@@ -101,6 +101,8 @@ public enum MACSource: String, Hashable, Sendable {
     case deviceID = "기기 ID(UUID)"
     /// IPv6 주소의 EUI-64 인터페이스 ID(…ff:fe…)에 박힌 MAC
     case ipv6 = "IPv6 주소(EUI-64)"
+    /// 이웃 탐색(NDP)으로 찔러서 받은 NS/NA에 든 MAC — 핑으로 상대가 자기 MAC을 쏘게 유도해 얻는다
+    case neighbor = "IPv6 이웃 요청(NDP)"
     /// 이전 스캔에서 잡아 이름으로 기억해 둔 MAC(이번엔 못 잡았을 때 되살림)
     case remembered = "기억된 MAC(이전에 잡음)"
 }

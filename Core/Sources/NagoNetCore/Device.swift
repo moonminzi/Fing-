@@ -35,6 +35,8 @@ public struct Device: Hashable, Sendable, Identifiable {
     public var localARPMAC: MACAddress?
     /// DHCP 요청을 엿들어 잡은 MAC(기기가 Wi-Fi에 붙거나 갱신할 때 알린 chaddr). 공유기 없이 얻은 진짜 MAC
     public var dhcpMAC: MACAddress?
+    /// IPv6 이웃 탐색(NDP)으로 찔러서 받은 MAC(실험) — 핑으로 상대가 자기 MAC을 쏘게 유도해 얻는다
+    public var neighborMAC: MACAddress?
     /// 이전 스캔에서 잡아 이름(mDNS·Bonjour)으로 기억해 둔 MAC. 이번에 못 잡아도(DHCP는 기회성) 되살려 보여 준다
     public var rememberedMAC: MACAddress?
     /// NetBIOS 답에 든 MAC
@@ -86,7 +88,7 @@ public struct Device: Hashable, Sendable, Identifiable {
     /// 이번에 실제로 알아낸 MAC(기억된 것 말고). 이게 있으면 기억해 두고, 없으면 기억된 것을 되살린다.
     public var observedMAC: (address: MACAddress, source: MACSource)? {
         let candidates: [(MACAddress?, MACSource)] = [
-            (routerMAC, .router), (localARPMAC, .localARP), (dhcpMAC, .dhcp),
+            (routerMAC, .router), (localARPMAC, .localARP), (dhcpMAC, .dhcp), (neighborMAC, .neighbor),
             (reportedMACs[.deviceSNMP], .deviceSNMP), (reportedMACs[.deviceAPI], .deviceAPI),
             (netbiosMAC, .netbios), (airplayMAC, .airplay), (reportedMACs[.bonjour], .bonjour),
             (reportedMACs[.deviceID], .deviceID), (reportedMACs[.ipv6], .ipv6),

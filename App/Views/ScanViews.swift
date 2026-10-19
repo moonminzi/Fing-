@@ -102,6 +102,9 @@ struct ScanControl: View {
             if let dhcp = scan.dhcpStatus {
                 text += "\n" + dhcp
             }
+            if let neighbor = scan.neighborStatus {
+                text += "\n" + neighbor
+            }
             if scan.isFirstScanOfNetwork {
                 text += "\n이 네트워크의 첫 기록이에요. 다음 스캔부터 처음 보는 기기에 '새 기기'가 붙어요."
             } else if scan.newDeviceCount > 0 {
