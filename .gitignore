@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+*.xcodeproj/
+DerivedData/
+build/
+App/Info.plist
+App/NagoNet.entitlements
+Payload/
+*.ipa
