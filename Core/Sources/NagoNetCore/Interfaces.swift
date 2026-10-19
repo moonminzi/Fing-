@@ -53,6 +53,31 @@ public enum Interfaces {
         return index == 0 ? nil : UInt32(index)
     }
 
+    /// 이 기기 한 인터페이스(en0 등)의 자기 MAC. `getifaddrs`의 AF_LINK(sockaddr_dl) 항목에서 꺼낸다.
+    /// iOS는 보통 Wi-Fi MAC을 02:00:…으로 가리므로 그때는 nil(그 사실을 그대로 돌려준다).
+    /// ARP·NDP 스푸핑처럼 "내 MAC"이 공격자 MAC으로 필요한 인가된 실험에서 쓴다.
+    #if canImport(Darwin)
+    public static func linkLayerAddress(of name: String) -> MACAddress? {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0, let first = head else { return nil }
+        defer { freeifaddrs(head) }
+        for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let ifa = entry.pointee
+            guard String(cString: ifa.ifa_name) == name, let addr = ifa.ifa_addr,
+                  addr.pointee.sa_family == ARPCache.linkFamily else { continue }   // AF_LINK(18): sockaddr_dl
+            let length = Int(addr.pointee.sa_len)
+            let raw = UnsafeRawPointer(addr)
+            let bytes = (0..<length).map { raw.load(fromByteOffset: $0, as: UInt8.self) }
+            if let mac = ARPCache.rawLinkAddress(bytes, at: 0, length: length).flatMap(MACAddress.init) {
+                return mac
+            }
+        }
+        return nil
+    }
+    #else
+    public static func linkLayerAddress(of name: String) -> MACAddress? { nil }
+    #endif
+
     /// 한 인터페이스에 주소가 여러 개일 때 쓸 만한 것 하나: 켜져 있고, 169.254 자동 주소보다 진짜 주소 먼저.
     public static func preferred(on name: String, in list: [InterfaceAddress]) -> InterfaceAddress? {
         let candidates = list.filter { $0.name == name && $0.isUp && !$0.address.isLoopback }

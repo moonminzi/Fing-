@@ -394,6 +394,7 @@ struct DeviceDetailView: View {
 
             if device.mac != nil {
                 WakeSection(device: device, scan: scan)
+                NeighborSpoofSection(device: device, scan: scan)
             }
 
             if device.model != nil || !device.banners.isEmpty {
@@ -686,6 +687,57 @@ private struct WakeSection: View {
             Text("제어")
         } footer: {
             Text("꺼진 기기를 깨우려면 그 기기에서 Wake-on-LAN을 켜 두어야 해요. 완전히 꺼진 기기는 iOS 제약(브로드캐스트)으로 못 깨울 수 있어요.")
+        }
+    }
+}
+
+/// 상세의 "보안 실험(인가된 테스트 전용)": IPv6 이웃 광고(NA)를 위조해 이 기기의 이웃 캐시에
+/// "게이트웨이 = 내 MAC"을 심어 중간자를 시도한다(ARP 스푸핑의 IPv6 사촌). iOS는 보통 막혀서,
+/// 되는지 실제로 측정해 한 줄로 보여 준다. 시작 전 인가 여부를 한 번 더 확인한다.
+private struct NeighborSpoofSection: View {
+    let device: Device
+    let scan: ScanViewModel
+
+    @State private var isRunning = false
+    @State private var message: String?
+    @State private var confirming = false
+
+    var body: some View {
+        Section {
+            Button(role: .destructive) {
+                confirming = true
+            } label: {
+                HStack {
+                    Label("NDP 스푸핑 실험 (인가된 테스트)", systemImage: "antenna.radiowaves.left.and.right")
+                    Spacer()
+                    if isRunning { ProgressView() }
+                }
+            }
+            .disabled(isRunning)
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("보안 실험")
+        } footer: {
+            Text("소유·관리하거나 명시적으로 허락받은 네트워크·CTF에서만 쓰세요. 이 기기에 '게이트웨이는 내 MAC'이라는 위조 IPv6 이웃 광고를 몇 초간 보내고, 끝나면 캐시를 원복해요. iOS는 보통 송신·자기 MAC을 막아 '불가'로 나올 수 있어요.")
+        }
+        .confirmationDialog("인가된 테스트 환경인가요?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("NDP 스푸핑 시작", role: .destructive) { run() }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("소유·관리하거나 명시적으로 허락받은 네트워크에서만 실행하세요.")
+        }
+    }
+
+    private func run() {
+        Task {
+            isRunning = true
+            message = "보내는 중…"
+            message = await scan.spoofNeighbor(device).message
+            isRunning = false
         }
     }
 }

