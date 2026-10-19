@@ -43,6 +43,7 @@ Core/                       NagoNetCore: UI·Network 프레임워크 없음 → 
   SSDP.swift                SSDP 유니캐스트 검색·UPnP 설명 XML 해석, HTTPFetching 프로토콜
   SNMP.swift                SNMPv2c(BER) GetBulk, 공유기 ARP 표 읽기(ARPTableReader)
   ARPTable.swift            이 기기 ARP 캐시 읽기(sysctl NET_RT_FLAGS+RTF_LLINFO), ARPCacheReading
+  NDPSpoof.swift            (인가된 실험 전용) IPv6 이웃 광고 위조 → 이웃 캐시 독 묻히기, NeighborAdvertising
   Export.swift              CSV 내보내기, 레이더 배치(RadarLayout)
   WakeOnLAN.swift           Wake-on-LAN 매직 패킷
 App/                        NagoNet 앱
@@ -243,6 +244,24 @@ ARP·NDP·SNMP가 다 막혀도 뚫리는 길이다. 기기는 Wi-Fi에 새로 �
 - 기회성이다: 그 순간에 붙거나 갱신한 기기만 잡힌다. 폰의 Wi-Fi(또는 비행기모드)를 껐다 켜면 그 순간 잡힌다.
 - 잡은 MAC은 폰의 네트워크용 무작위 MAC이라 제조사는 없지만, **그 네트워크 안에선 고정**이라 IP가 바뀌어도 같은 기기를
   알아보는 열쇠가 된다(`DeviceIdentity`가 무작위 MAC도 식별에 쓴다). 설정에서 끌 수 있다.
+
+#### NDP 스푸핑 — 이웃 캐시 독 묻히기 (인가된 실험·CTF 전용)
+
+> ⚠️ **허락받은(인가된) 네트워크에서만.** 남의 트래픽을 가로채는 기법이라, 소유·관리하거나 명시적으로 허락받은
+> 환경(랩·CTF)에서만 쓴다. 기본값으로 아무 공격도 하지 않는다 — `NDPSpoof`를 호출해야 비로소 NA를 내보낸다.
+
+ARP 스푸핑의 IPv6 사촌이다. ARP에 인증이 없듯 NDP에도 없어서, 이웃 광고(NA, ICMPv6 136)를 요청 없이
+Override 플래그를 켜 보내면 받는 쪽은 자기 이웃 캐시의 해당 주소 항목을 보낸 MAC으로 덮는다(RFC 4861 §7.2.5).
+피해자에게 "게이트웨이는 내 MAC", 게이트웨이에게 "피해자는 내 MAC"이라 하면 둘 사이 트래픽이 이 기기를 거친다(중간자).
+
+- `NDPSpoof.advertisement(...)`가 32바이트 NA를 짜고(`NeighborDiscovery`가 NA를 **읽는** 그 레이아웃 그대로),
+  `NDPSpoof.mitm(victim:gateway:attackerMAC:)`이 양방향 독 한 쌍을 만든다. 바이트를 짜는 일이라 플랫폼과 무관해
+  리눅스 `swift test`로 검증된다(`NDPSpoofTests`).
+- 실제 전송은 `NeighborProber`와 **같은** `SOCK_DGRAM` ICMPv6 소켓을 쓴다(raw 아님). 그래서 iOS 앱도 소켓은 열지만,
+  커널이 echo 외 ICMPv6 송신을 막을 수 있어 **나가는지는 측정**한다(`NDPSpoofRun.blocked`) — DHCP·NDP 때와 같은 정직함.
+  홉 한계 255를 올려 보내야(RFC 4861 §11.2) 받는 쪽이 NA를 받아 준다.
+- `NDPSpoofer`가 이웃 캐시가 식지 않게 주기적으로 다시 보내고, 끝낼 때 `restore(...)`로 진짜 MAC을 다시 알려 캐시를
+  원복한다. 포이즈닝 결과는 기존 NDP **읽기**(`NeighborDiscovery`)로 바로 확인할 수 있다.
 
 ### 기기 깨우기 (Wake-on-LAN)
 
