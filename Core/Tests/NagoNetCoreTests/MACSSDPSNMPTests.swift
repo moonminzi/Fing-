@@ -73,10 +73,11 @@ struct MACTests {
         #expect(known[0].keys(network: "n").first == "mac:3C:7C:3F:11:22:33")
     }
 
-    @Test func randomizedMACIsNotAnIdentity() {
+    @Test func randomizedMACIsAUsableIdentityKey() {
         var phone = Device(address: IPv4(10, 0, 0, 7), responseTime: .milliseconds(30))
         phone.routerMAC = MACAddress("A6:00:00:00:00:01")
-        #expect(phone.identity.mac == nil)
+        // 무작위 MAC도 식별에 쓴다: DHCP·공유기로 잡으면 그 네트워크 안에선 고정이라 IP가 바뀌어도 같은 기기로 추적
+        #expect(phone.identity.mac == MACAddress("A6:00:00:00:00:01"))
         #expect(phone.kind == .phone)
         #expect(phone.classification.reasons == ["무작위 MAC(비공개 Wi-Fi 주소)를 쓰는 휴대기기"])
     }

@@ -256,7 +256,8 @@ public struct DeviceIdentity: Hashable, Sendable, Codable {
     public let address: IPv4
     public let hostName: String?
     public let bonjourName: String?
-    /// 알면 가장 믿을 만한 열쇠(무작위 주소는 넣지 않는다: Wi-Fi마다 바뀔 수 있다)
+    /// 알면 가장 믿을 만한 열쇠. 무작위 주소도 넣는다 — DHCP·공유기로 잡은 폰의 네트워크용 MAC은
+    /// 그 네트워크 안에선 고정이라, 베이스라인이 네트워크별이라 충돌 없이 "같은 기기"를 집는다
     public let mac: MACAddress?
 
     public init(address: IPv4, hostName: String?, bonjourName: String?, mac: MACAddress? = nil) {
@@ -279,8 +280,9 @@ public struct DeviceIdentity: Hashable, Sendable, Codable {
 
 extension Device {
     public var identity: DeviceIdentity {
-        DeviceIdentity(address: address, hostName: displayHostName, bonjourName: bonjourName,
-                       mac: mac.flatMap { $0.address.isRandomized ? nil : $0.address })
+        // 무작위 주소도 넣는다: DHCP·공유기로 잡은 네트워크용 MAC은 그 네트워크 안에선 고정이라,
+        // IP(DHCP)가 바뀌어도 같은 기기를 알아보는 가장 강한 열쇠가 된다(베이스라인은 네트워크별이라 충돌 없음).
+        DeviceIdentity(address: address, hostName: displayHostName, bonjourName: bonjourName, mac: mac?.address)
     }
 }
 
