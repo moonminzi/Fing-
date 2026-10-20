@@ -238,6 +238,8 @@ final class ScanViewModel {
         case playing(uri: String)
         case noNetwork
         case noSelfIP
+        case noUPnPResponse
+        case noDescription
         case noIGD
         case noRenderer
         case fault(code: String, description: String)
@@ -257,7 +259,9 @@ final class ScanViewModel {
                 return "UPnP 변경: 렌더러에 재생을 지시했어요 — \(uri)"
             case .noNetwork: return "UPnP: 먼저 스캔하세요."
             case .noSelfIP: return "UPnP: 이 기기의 IP를 몰라요 — 스캔 후 다시 시도하세요."
-            case .noIGD: return "UPnP: 이 공유기에서 IGD(WAN 연결) 서비스를 못 찾았어요(UPnP가 꺼졌거나 미지원)."
+            case .noUPnPResponse: return "UPnP: 이 기기가 유니캐스트 M-SEARCH에 응답하지 않아요 — UPnP가 꺼졌거나 멀티캐스트 발견만 지원해요(공유기 설정에서 UPnP/IGD를 켜 보세요)."
+            case .noDescription: return "UPnP: 응답은 왔지만 설명(description.xml)을 못 받았어요 — 포트/경로가 막혔거나 주소가 기기와 달라요."
+            case .noIGD: return "UPnP: 응답은 왔지만 IGD(WAN 연결) 서비스가 없어요 — 공유기가 아니거나 IGD 미지원이에요."
             case .noRenderer: return "UPnP: 이 기기에서 DLNA AVTransport(렌더러)를 못 찾았어요(Chromecast·Roku는 UPnP가 아니라 불가)."
             case .fault(let code, let desc): return "UPnP 실패: 기기가 거부했어요(SOAP 폴트 \(code) \(desc))."
             case .failed: return "UPnP: 연결/응답 실패 — 이 기기가 UPnP 제어를 안 열었거나 경로가 막혔어요."
@@ -274,30 +278,69 @@ final class ScanViewModel {
         let serviceType: String
     }
 
-    /// 지정 기기에서 원하는 서비스의 controlURL을 찾는다: 유니캐스트 M-SEARCH → 설명 XML → serviceList.
-    /// `needles`는 serviceType에 들어 있어야 할 부분문자열(버전 차이를 넘기려 부분일치). 먼저 맞는 것을 쓴다.
-    private func discoverControl(on host: IPv4, matching needles: [String]) async -> UPnPTarget? {
-        guard let reply = await upnpUDP.exchange(SSDP.searchRequest(to: host), with: host, port: SSDP.port, timeout: .seconds(2)),
-              let (location, _) = SSDP.parseResponse(reply),
-              let descTarget = SSDP.descriptionTarget(location, expectedHost: host),
-              let xmlBytes = await upnpHTTP.get(host: host, port: descTarget.port, path: descTarget.path, tls: descTarget.tls)
-        else { return nil }
-        let xml = String(decoding: xmlBytes.prefix(128 * 1024), as: UTF8.self)
-        let services = SSDP.services(in: xml)
-        for needle in needles {
-            if let service = services.first(where: { $0.serviceType.range(of: needle, options: .caseInsensitive) != nil }),
-               let control = SSDP.controlTarget(controlURL: service.controlURL, base: location, expectedHost: host) {
-                return UPnPTarget(host: host, port: control.port, path: control.path, tls: control.tls, serviceType: service.serviceType)
+    /// controlURL 찾기의 결과: 어느 단계에서 멈췄는지 구분해 사용자에게 원인을 알린다.
+    private enum UPnPDiscovery {
+        case found(UPnPTarget)
+        case noResponse       // M-SEARCH 무응답
+        case noDescription    // 응답은 왔으나 설명 XML을 못 받음
+        case noService        // 설명은 받았으나 원하는 서비스가 없음
+    }
+
+    /// 공유기 IGD를 찾을 때 바꿔 가며 쏘는 검색 대상(ST). rootdevice에 답 안 하는 공유기를 위해.
+    private static let igdSearchTargets = [
+        "urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+        "urn:schemas-upnp-org:device:InternetGatewayDevice:2",
+        "upnp:rootdevice",
+        "ssdp:all",
+    ]
+    /// DLNA 렌더러를 찾을 때 쓰는 검색 대상.
+    private static let rendererSearchTargets = [
+        "urn:schemas-upnp-org:device:MediaRenderer:1",
+        "upnp:rootdevice",
+        "ssdp:all",
+    ]
+
+    /// 지정 기기에서 원하는 서비스의 controlURL을 찾는다: ST를 바꿔 가며 유니캐스트 M-SEARCH → 설명 XML → serviceList.
+    /// `needles`는 serviceType에 들어 있어야 할 부분문자열(버전 차이를 넘기려 부분일치). 멈춘 단계까지 돌려준다.
+    private func discoverControl(on host: IPv4, matching needles: [String], searchTargets: [String]) async -> UPnPDiscovery {
+        var sawResponse = false
+        var sawDescription = false
+        for searchTarget in searchTargets {
+            guard let reply = await upnpUDP.exchange(SSDP.searchRequest(to: host, searchTarget: searchTarget), with: host, port: SSDP.port, timeout: .seconds(2)),
+                  let (location, _) = SSDP.parseResponse(reply) else { continue }
+            sawResponse = true
+            guard let descTarget = SSDP.descriptionTarget(location, expectedHost: host),
+                  let xmlBytes = await upnpHTTP.get(host: host, port: descTarget.port, path: descTarget.path, tls: descTarget.tls) else { continue }
+            sawDescription = true
+            let xml = String(decoding: xmlBytes.prefix(256 * 1024), as: UTF8.self)
+            let services = SSDP.services(in: xml)
+            for needle in needles {
+                if let service = services.first(where: { $0.serviceType.range(of: needle, options: .caseInsensitive) != nil }),
+                   let control = SSDP.controlTarget(controlURL: service.controlURL, base: location, expectedHost: host) {
+                    return .found(UPnPTarget(host: host, port: control.port, path: control.path, tls: control.tls, serviceType: service.serviceType))
+                }
             }
         }
-        return nil
+        if sawDescription { return .noService }
+        if sawResponse { return .noDescription }
+        return .noResponse
+    }
+
+    /// 못 찾은 이유를 결과로 바꾼다.
+    private func discoveryFailure(_ discovery: UPnPDiscovery, isRenderer: Bool) -> UPnPControlResult {
+        switch discovery {
+        case .found: return .failed
+        case .noResponse: return .noUPnPResponse
+        case .noDescription: return .noDescription
+        case .noService: return isRenderer ? .noRenderer : .noIGD
+        }
     }
 
     /// 정찰(기본·안전): 공유기 IGD에 공인 IP와 기존 포워딩 규칙을 묻는다. 아무것도 바꾸지 않는다.
     func inspectGateway() async -> UPnPControlResult {
         guard let network = scannedNetwork else { return .noNetwork }
-        let gateway = network.gateway.address
-        guard let igd = await discoverControl(on: gateway, matching: ["WANIPConnection", "WANPPPConnection"]) else { return .noIGD }
+        let discovery = await discoverControl(on: network.gateway.address, matching: ["WANIPConnection", "WANPPPConnection"], searchTargets: Self.igdSearchTargets)
+        guard case .found(let igd) = discovery else { return discoveryFailure(discovery, isRenderer: false) }
 
         var externalIP: String?
         let ext = UPnPControl.getExternalIPAddress(serviceType: igd.serviceType)
@@ -322,7 +365,8 @@ final class ScanViewModel {
     func openTestPortMapping(externalPort: UInt16 = 8888) async -> UPnPControlResult {
         guard let network = scannedNetwork else { return .noNetwork }
         guard let selfIP = devices.values.first(where: { $0.isSelf })?.address else { return .noSelfIP }
-        guard let igd = await discoverControl(on: network.gateway.address, matching: ["WANIPConnection", "WANPPPConnection"]) else { return .noIGD }
+        let discovery = await discoverControl(on: network.gateway.address, matching: ["WANIPConnection", "WANPPPConnection"], searchTargets: Self.igdSearchTargets)
+        guard case .found(let igd) = discovery else { return discoveryFailure(discovery, isRenderer: false) }
         let add = UPnPControl.addPortMapping(externalPort: externalPort, protocolTCP: true, internalPort: externalPort,
                                              internalClient: selfIP, description: "NAGO-NET-TEST", leaseSeconds: 3600,
                                              serviceType: igd.serviceType)
@@ -336,7 +380,8 @@ final class ScanViewModel {
     func closeTestPortMapping() async -> UPnPControlResult {
         guard let network = scannedNetwork else { return .noNetwork }
         guard let mapping = openedMapping else { return .failed }
-        guard let igd = await discoverControl(on: network.gateway.address, matching: ["WANIPConnection", "WANPPPConnection"]) else { return .noIGD }
+        let discovery = await discoverControl(on: network.gateway.address, matching: ["WANIPConnection", "WANPPPConnection"], searchTargets: Self.igdSearchTargets)
+        guard case .found(let igd) = discovery else { return discoveryFailure(discovery, isRenderer: false) }
         let del = UPnPControl.deletePortMapping(externalPort: mapping.externalPort, protocolTCP: mapping.tcp, serviceType: igd.serviceType)
         guard let reply = await post(igd, del) else { return .failed }
         if let fault = UPnPControl.fault(reply) { return .fault(code: fault.code, description: fault.description) }
@@ -347,7 +392,8 @@ final class ScanViewModel {
     /// 변경(인가 전용): DLNA 렌더러에 임의 URL을 재생시킨다(SetAVTransportURI + Play). 화면·음성 탈취/blind SSRF 데모.
     func playOnRenderer(_ device: Device, uri: String) async -> UPnPControlResult {
         guard scannedNetwork != nil else { return .noNetwork }
-        guard let av = await discoverControl(on: device.address, matching: ["AVTransport"]) else { return .noRenderer }
+        let discovery = await discoverControl(on: device.address, matching: ["AVTransport"], searchTargets: Self.rendererSearchTargets)
+        guard case .found(let av) = discovery else { return discoveryFailure(discovery, isRenderer: true) }
         let set = UPnPControl.setAVTransportURI(uri: uri)
         guard let setReply = await post(av, set) else { return .failed }
         if let fault = UPnPControl.fault(setReply) { return .fault(code: fault.code, description: fault.description) }

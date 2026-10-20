@@ -54,11 +54,17 @@ public enum SSDP {
     public static let port: UInt16 = 1900
 
     public static func searchRequest(to host: IPv4) -> [UInt8] {
+        searchRequest(to: host, searchTarget: "upnp:rootdevice")
+    }
+
+    /// 검색 대상(ST)을 골라 보내는 유니캐스트 M-SEARCH. 공유기 IGD는 rootdevice에 답하지 않고
+    /// `urn:schemas-upnp-org:device:InternetGatewayDevice:1`이나 `ssdp:all`에만 답하기도 해서 바꿔 가며 쏜다.
+    public static func searchRequest(to host: IPv4, searchTarget: String) -> [UInt8] {
         Array("""
         M-SEARCH * HTTP/1.1\r
         HOST: \(host):1900\r
         MAN: "ssdp:discover"\r
-        ST: upnp:rootdevice\r
+        ST: \(searchTarget)\r
         USER-AGENT: iOS/17 UPnP/1.1 NAGO-NET/1.0\r
         \r
 
