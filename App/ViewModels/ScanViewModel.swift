@@ -206,8 +206,11 @@ final class ScanViewModel {
     func spoofNeighbor(_ device: Device, for duration: Duration = .seconds(6)) async -> NeighborSpoofResult {
         guard let network = scannedNetwork else { return .noNetwork }
         guard let victim6 = device.ipv6Addresses.first(where: \.isLinkLocal) else { return .noVictimIPv6 }
-        guard let gatewayDevice = devices[network.gateway.address],
-              let gateway6 = gatewayDevice.ipv6Addresses.first(where: \.isLinkLocal) else { return .noGatewayIPv6 }
+        // 게이트웨이(라우터)는 Bonjour로 MAC을 안 알려 ipv6Addresses가 비기 쉽다 → IPv6 기본 경로에서 라우터 fe80::를 읽는다
+        let gatewayDevice = devices[network.gateway.address]
+        guard let gateway6 = gatewayDevice?.ipv6Addresses.first(where: \.isLinkLocal)
+            ?? RouteTable.readIPv6Gateway(interfaceIndex: network.interfaceName.flatMap(Interfaces.index(of:)))
+        else { return .noGatewayIPv6 }
 
         // 내 MAC을 읽히면 쓰고, iOS가 가리면 LAN에 없는 로컬관리 가짜 MAC으로 캐시를 블랙홀시킨다(내 실제 MAC 불요)
         let poisonMAC = Interfaces.linkLayerAddress(of: network.interfaceName ?? "en0")
@@ -217,7 +220,7 @@ final class ScanViewModel {
 
         // 뒷정리: 아는 진짜 MAC으로 양쪽 캐시를 원복한다(impersonatedIP별로 매핑)
         var realMACs: [IPv6Address: MACAddress] = [:]
-        if let gatewayMAC = gatewayDevice.mac?.address { realMACs[gateway6] = gatewayMAC }
+        if let gatewayMAC = gatewayDevice?.mac?.address { realMACs[gateway6] = gatewayMAC }
         if let victimMAC = device.mac?.address { realMACs[victim6] = victimMAC }
         _ = neighborSpoofer.restore(targets, realMACs: realMACs, on: network.interfaceName)
 
