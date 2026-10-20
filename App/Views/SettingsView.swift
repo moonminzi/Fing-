@@ -8,6 +8,10 @@ struct SettingsView: View {
     @AppStorage(AppSettings.dhcpSniffKey) private var dhcpSniff = true
     @AppStorage(AppSettings.backgroundCheckKey) private var backgroundCheck = false
     @State private var notificationsDenied = false
+    @State private var advertiser = BonjourAdvertiser()
+    @State private var spoofName = "거실 TV"
+    @State private var spoofTypeIndex = 0
+    @State private var confirmingSpoof = false
 
     var body: some View {
         NavigationStack {
@@ -55,6 +59,8 @@ struct SettingsView: View {
                 } footer: {
                     Text("앱이 꺼져 있을 때 iOS가 정한 때(보통 몇 시간에 한 번, 충전 중이거나 자주 쓰는 시간에 더 자주) 30초쯤 깨워 줘요. 그때 Wi-Fi를 빠르게 훑어 기록에 없는 기기가 보이면 알려요. 실시간 감시는 iOS에서 할 수 없어요. 앱에서 스캔하다 나가면 30초 동안은 마저 스캔해요.")
                 }
+
+                bonjourSpoofSection
             }
             .navigationTitle("설정")
             .navigationBarTitleDisplayMode(.inline)
@@ -63,6 +69,53 @@ struct SettingsView: View {
                     Button("닫기") { dismiss() }
                 }
             }
+        }
+    }
+
+    /// 보안 실험: 가짜 Bonjour 서비스를 광고해 유인 + 접속자 기록(iOS에서 실제로 동작, entitlement 불필요).
+    @ViewBuilder private var bonjourSpoofSection: some View {
+        Section {
+            if case .advertising(let name, let type) = advertiser.state {
+                LabeledContent("광고 중", value: "\(name)")
+                Text(type).font(.caption).foregroundStyle(.secondary)
+                Button("중지", role: .destructive) { advertiser.stop() }
+                if advertiser.hits.isEmpty {
+                    Text("아직 접속한 기기 없음 — 다른 기기에서 이 서비스가 보이는지 확인하세요.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(advertiser.hits, id: \.self) { hit in
+                        Label(hit, systemImage: "dot.radiowaves.left.and.right").font(.caption)
+                    }
+                }
+            } else {
+                Picker("서비스 종류", selection: $spoofTypeIndex) {
+                    ForEach(Array(BonjourAdvertiser.advertisableTypes.enumerated()), id: \.offset) { index, item in
+                        Text(item.label).tag(index)
+                    }
+                }
+                LabeledContent("이름") {
+                    TextField("거실 TV", text: $spoofName)
+                        .multilineTextAlignment(.trailing)
+                        .autocorrectionDisabled()
+                }
+                Button("가짜 서비스 광고 시작") { confirmingSpoof = true }
+                if case .failed(let message) = advertiser.state {
+                    Text("실패: \(message)").font(.caption).foregroundStyle(.orange)
+                }
+            }
+        } header: {
+            Text("보안 실험: 가짜 Bonjour 서비스 광고")
+        } footer: {
+            Text("인가받은 자기 네트워크·CTF에서만 쓰세요. 선택한 종류의 가짜 Bonjour 서비스를 네트워크에 광고해 다른 기기 목록에 뜨게 하고(유인), 접속해 온 기기의 주소를 기록해요(허니팟). 로컬 네트워크 권한만으로 iOS에서 실제로 동작해요(멀티캐스트 entitlement 불필요). 접속 사실만 보고 자격증명은 수집하지 않아요. 앱을 끄거나 '중지'하면 사라져요.")
+        }
+        .confirmationDialog("인가된 자기 네트워크인가요?", isPresented: $confirmingSpoof, titleVisibility: .visible) {
+            Button("광고 시작", role: .destructive) {
+                let type = BonjourAdvertiser.advertisableTypes[spoofTypeIndex].type
+                advertiser.start(name: spoofName.isEmpty ? "거실 TV" : spoofName, type: type)
+            }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("네트워크에 가짜 서비스를 띄웁니다. 소유·관리하는 네트워크에서만 실행하세요.")
         }
     }
 }

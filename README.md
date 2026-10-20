@@ -286,6 +286,19 @@ ARP·NDP **스푸핑 송신**은 iOS 커널이 막지만(raw 필요 또는 EPERM
 안 된다(IGD 못 찾음으로 정직하게 표시). ICMPv6 송신은 echo·NI 쿼리만 커널이 허용하므로 NDP 교란은 랩 전용으로 남는다
 (위 "NDP 이웃 캐시 교란" 참고) — iOS에서 "실제로 되는" 능동 기법은 이 UPnP 제어다.
 
+#### 가짜 Bonjour 서비스 광고 (서비스 스푸핑·허니팟, 인가된 자기 네트워크·CTF 전용)
+
+> ⚠️ **인가받은 자기 네트워크에서만.** 다른 기기를 유인하는 기법이라 소유·관리하거나 허락받은 환경에서만 쓴다.
+
+ARP·NDP 스푸핑 송신과 UPnP(공유기가 유니캐스트 M-SEARCH에 답해야 함)가 막혀도, **`NWListener`로 Bonjour
+서비스를 광고하는 건 로컬 네트워크 권한만으로 iOS에서 실제로 동작한다**(멀티캐스트 entitlement 불필요).
+설정 → "보안 실험: 가짜 Bonjour 서비스 광고"에서 가짜 AirPlay·프린터·캐스트·관리페이지 같은 서비스를 띄우면
+다른 기기의 탐색 목록에 그 이름이 뜬다(유인). 그 가짜 서비스에 접속해 오는 기기의 주소를 기록한다(허니팟).
+
+- `App/Services/BonjourAdvertiser.swift`: 임의 TCP 포트에 `NWListener`를 열고 `NWListener.Service(name:type:)`로
+  광고한다. 들어오는 연결은 **주소만 기록하고 바로 끊는다** — 가짜 로그인 폼 등 자격증명 수집은 하지 않는다(접속 탐지까지).
+- 광고 가능한 종류는 Info.plist의 `NSBonjourServices`에 선언된 표준 타입(_airplay·_raop·_googlecast·_http·_ipp·_smb·_ssh)만.
+
 ### 기기 깨우기 (Wake-on-LAN)
 
 MAC을 아는 기기는 상세 화면의 **제어 → 깨우기**, 또는 스캔 기록에서 기기를 **왼쪽으로 밀어** 깨울 수 있다
