@@ -209,11 +209,11 @@ final class ScanViewModel {
         // 게이트웨이(라우터)는 Bonjour로 MAC을 안 알려 ipv6Addresses가 비기 쉽다 → IPv6 기본 경로에서 라우터 fe80::를 읽는다
         let gatewayDevice = devices[network.gateway.address]
         guard let gateway6 = gatewayDevice?.ipv6Addresses.first(where: \.isLinkLocal)
-            ?? RouteTable.readIPv6Gateway(interfaceIndex: network.interfaceName.flatMap(Interfaces.index(of:)))
+            ?? RouteTable.readIPv6Gateway(interfaceIndex: Interfaces.index(of: network.interfaceName))
         else { return .noGatewayIPv6 }
 
         // 내 MAC을 읽히면 쓰고, iOS가 가리면 LAN에 없는 로컬관리 가짜 MAC으로 캐시를 블랙홀시킨다(내 실제 MAC 불요)
-        let poisonMAC = Interfaces.linkLayerAddress(of: network.interfaceName ?? "en0")
+        let poisonMAC = Interfaces.linkLayerAddress(of: network.interfaceName)
             ?? MACAddress([0x02, 0x00, 0xDE, 0xAD, 0xBE, 0xEF])!
         let targets = NDPSpoof.mitm(victim: victim6, gateway: gateway6, attackerMAC: poisonMAC)
         let run = await neighborSpoofer.poison(targets, on: network.interfaceName, every: .seconds(2), for: duration)
