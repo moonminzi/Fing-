@@ -396,6 +396,13 @@ struct DeviceDetailView: View {
                 WakeSection(device: device, scan: scan)
                 NeighborSpoofSection(device: device, scan: scan)
             }
+            if device.isGateway {
+                UPnPGatewaySection(scan: scan)
+            }
+            if device.kind == .tv || device.kind == .speaker
+                || (device.upnp?.deviceType?.localizedCaseInsensitiveContains("MediaRenderer") ?? false) {
+                UPnPRendererSection(device: device, scan: scan)
+            }
 
             if device.model != nil || !device.banners.isEmpty {
                 Section("기기 정보") {
@@ -691,9 +698,9 @@ private struct WakeSection: View {
     }
 }
 
-/// 상세의 "보안 실험(인가된 테스트 전용)": IPv6 이웃 광고(NA)를 위조해 이 기기의 이웃 캐시에
-/// "게이트웨이 = 내 MAC"을 심어 중간자를 시도한다(ARP 스푸핑의 IPv6 사촌). iOS는 보통 막혀서,
-/// 되는지 실제로 측정해 한 줄로 보여 준다. 시작 전 인가 여부를 한 번 더 확인한다.
+/// 상세의 "보안 실험(인가된 테스트 전용)": 위조 IPv6 이웃 광고(NA)로 이 기기와 게이트웨이의
+/// 이웃 캐시를 가짜 MAC으로 덮어 연결을 교란(블랙홀) 시도하고, 송신이 되는지 실제로 측정해 한 줄로 보여 준다.
+/// 스톡 iOS 커널은 비루트 앱의 NA 송신을 막아(EPERM) 보통 '불가'로 나온다 — 실동작은 랩의 루트 맥·리눅스.
 private struct NeighborSpoofSection: View {
     let device: Device
     let scan: ScanViewModel
@@ -708,7 +715,7 @@ private struct NeighborSpoofSection: View {
                 confirming = true
             } label: {
                 HStack {
-                    Label("NDP 스푸핑 실험 (인가된 테스트)", systemImage: "antenna.radiowaves.left.and.right")
+                    Label("NDP 이웃 캐시 교란 (실험)", systemImage: "antenna.radiowaves.left.and.right")
                     Spacer()
                     if isRunning { ProgressView() }
                 }
@@ -722,10 +729,10 @@ private struct NeighborSpoofSection: View {
         } header: {
             Text("보안 실험")
         } footer: {
-            Text("소유·관리하거나 명시적으로 허락받은 네트워크·CTF에서만 쓰세요. 이 기기에 '게이트웨이는 내 MAC'이라는 위조 IPv6 이웃 광고를 몇 초간 보내고, 끝나면 캐시를 원복해요. iOS는 보통 송신·자기 MAC을 막아 '불가'로 나올 수 있어요.")
+            Text("소유·관리하거나 명시적으로 허락받은 네트워크·CTF에서만 쓰세요. 위조 IPv6 이웃 광고로 상대의 게이트웨이 캐시를 가짜 MAC으로 덮어 연결을 교란하고, 끝나면 원복해요. 스톡 iOS는 커널이 이 송신을 막아(EPERM) 보통 '불가'로 나와요 — 실제 동작은 랩의 루트 맥·리눅스에서 됩니다.")
         }
         .confirmationDialog("인가된 테스트 환경인가요?", isPresented: $confirming, titleVisibility: .visible) {
-            Button("NDP 스푸핑 시작", role: .destructive) { run() }
+            Button("교란 시작", role: .destructive) { run() }
             Button("취소", role: .cancel) {}
         } message: {
             Text("소유·관리하거나 명시적으로 허락받은 네트워크에서만 실행하세요.")
@@ -737,6 +744,144 @@ private struct NeighborSpoofSection: View {
             isRunning = true
             message = "보내는 중…"
             message = await scan.spoofNeighbor(device).message
+            isRunning = false
+        }
+    }
+}
+
+/// 상세의 "UPnP 제어(공유기)": SSDP로 공유기 IGD를 찾아 SOAP로 정찰(공인 IP·포워딩 조회)하거나
+/// 포트포워딩을 열고/닫는다. 제어는 유니캐스트 HTTP POST라 iOS에서 entitlement 없이 실제로 동작한다.
+/// 정찰은 안전(변경 없음)해 바로 노출하고, 포트 열기(변경)는 인가 확인 뒤에 둔다.
+private struct UPnPGatewaySection: View {
+    let scan: ScanViewModel
+
+    @State private var isRunning = false
+    @State private var message: String?
+    @State private var confirming = false
+
+    var body: some View {
+        Section {
+            Button {
+                inspect()
+            } label: {
+                HStack {
+                    Label("정찰: 공인 IP·포트포워딩 조회", systemImage: "magnifyingglass")
+                    Spacer()
+                    if isRunning { ProgressView() }
+                }
+            }
+            .disabled(isRunning)
+
+            Button(role: .destructive) {
+                confirming = true
+            } label: {
+                Label("포트 열기 (실험)", systemImage: "lock.open")
+            }
+            .disabled(isRunning)
+
+            Button {
+                closePort()
+            } label: {
+                Label("닫기 (롤백)", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(isRunning)
+
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        } header: {
+            Text("UPnP 제어 (공유기)")
+        } footer: {
+            Text("인가받은 자기 네트워크·CTF에서만 쓰세요. UPnP IGD는 무인증이라 LAN 클라이언트의 SOAP 호출이 그대로 수행돼요. '정찰'은 아무것도 바꾸지 않고, '포트 열기'는 공인 포트 8888을 이 기기로 여는 TCP 포워딩을 만들어요(1시간 임대) — 끝나면 반드시 '닫기(롤백)'로 지우세요. iOS에서 실제로 동작합니다.")
+        }
+        .confirmationDialog("인가된 자기 네트워크인가요?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("포트 열기", role: .destructive) { openPort() }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("공유기 방화벽에 실제로 포워딩을 만듭니다. 소유·관리하는 네트워크에서만 실행하세요.")
+        }
+    }
+
+    private func inspect() {
+        Task {
+            isRunning = true
+            message = "요청 중…"
+            message = await scan.inspectGateway().message
+            isRunning = false
+        }
+    }
+
+    private func openPort() {
+        Task {
+            isRunning = true
+            message = "요청 중…"
+            message = await scan.openTestPortMapping().message
+            isRunning = false
+        }
+    }
+
+    private func closePort() {
+        Task {
+            isRunning = true
+            message = "요청 중…"
+            message = await scan.closeTestPortMapping().message
+            isRunning = false
+        }
+    }
+}
+
+/// 상세의 "UPnP 제어(DLNA 렌더러)": SSDP로 AVTransport를 찾아 TV·스피커에 임의 URL을 재생시킨다(SetAVTransportURI+Play).
+/// Chromecast·Roku는 UPnP가 아니라 불가. 변경 동작이라 인가 확인 뒤에 둔다.
+private struct UPnPRendererSection: View {
+    let device: Device
+    let scan: ScanViewModel
+
+    /// CTF 데모용 공개 테스트 영상(렌더러가 직접 가져가 튼다)
+    static let testURI = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+
+    @State private var isRunning = false
+    @State private var message: String?
+    @State private var confirming = false
+
+    var body: some View {
+        Section {
+            Button(role: .destructive) {
+                confirming = true
+            } label: {
+                HStack {
+                    Label("테스트 영상 재생 (실험)", systemImage: "play.tv")
+                    Spacer()
+                    if isRunning { ProgressView() }
+                }
+            }
+            .disabled(isRunning)
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        } header: {
+            Text("UPnP 제어 (DLNA 렌더러)")
+        } footer: {
+            Text("인가받은 자기 네트워크·CTF에서만 쓰세요. DLNA AVTransport로 이 TV·스피커에 공개 테스트 영상을 강제로 재생시켜요(화면·음성 탈취/blind SSRF 데모). Chromecast·Roku는 UPnP가 아니라 통하지 않아요. iOS에서 실제로 동작합니다.")
+        }
+        .confirmationDialog("인가된 자기 네트워크인가요?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("재생", role: .destructive) { run() }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("이 기기를 실제로 제어합니다. 소유·관리하는 네트워크에서만 실행하세요.")
+        }
+    }
+
+    private func run() {
+        Task {
+            isRunning = true
+            message = "요청 중…"
+            message = await scan.playOnRenderer(device, uri: Self.testURI).message
             isRunning = false
         }
     }

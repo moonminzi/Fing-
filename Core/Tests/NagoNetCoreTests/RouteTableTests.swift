@@ -25,6 +25,11 @@ struct RouteTableTests {
         [20, 18] + [UInt8](repeating: 0, count: 18)
     }
 
+    /// sockaddr_in6(28바이트): len·fam(30)·port(2)·flow(4)·addr16@8·scope(4)
+    private func inet6(_ addr: [UInt8]) -> [UInt8] {
+        [28, 30, 0, 0, 0, 0, 0, 0] + addr + [0, 0, 0, 0]
+    }
+
     private func padded(_ sockaddr: [UInt8]) -> [UInt8] {
         let length = Int(sockaddr[0])
         let size = length > 0 ? 1 + ((length - 1) | 3) : 4
@@ -85,6 +90,24 @@ struct RouteTableTests {
     @Test func linkLayerGatewayIsNotAnAddress() {
         let bytes = message(index: 6, [0: inet(IPv4(192, 168, 0, 7)), 1: link()])
         #expect(RouteTable.parse(bytes).first?.gateway == nil)
+    }
+
+    @Test func parsesIPv6DefaultGatewayLinkLocal() {
+        let zero = [UInt8](repeating: 0, count: 16)                                  // ::  (기본 경로 목적지)
+        let routerLL: [UInt8] = [0xFE, 0x80] + [UInt8](repeating: 0, count: 13) + [1]  // fe80::1
+        let defaultRoute = message(index: 6, [0: inet6(zero), 1: inet6(routerLL)])
+        #expect(RouteTable.parseIPv6Gateway(defaultRoute, interfaceIndex: 6) == IPv6Address(routerLL))
+        #expect(RouteTable.parseIPv6Gateway(defaultRoute, interfaceIndex: nil) == IPv6Address(routerLL))
+
+        // 글로벌(링크로컬 아님) 게이트웨이는 무시한다
+        let globalGW: [UInt8] = [0x20, 0x01] + [UInt8](repeating: 0, count: 13) + [1]   // 2001::1
+        let nonLinkLocal = message(index: 6, [0: inet6(zero), 1: inet6(globalGW)])
+        #expect(RouteTable.parseIPv6Gateway(nonLinkLocal, interfaceIndex: 6) == nil)
+
+        // 기본 경로가 아니면(목적지가 ::가 아님) 무시한다
+        let subnetDestination: [UInt8] = [0xFE, 0x80] + [UInt8](repeating: 0, count: 14)
+        let subnetRoute = message(index: 6, [0: inet6(subnetDestination), 1: inet6(routerLL)])
+        #expect(RouteTable.parseIPv6Gateway(subnetRoute, interfaceIndex: 6) == nil)
     }
 
     @Test func skipsUnknownVersionAndStopsOnGarbage() {

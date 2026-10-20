@@ -137,6 +137,79 @@ public enum RouteTable {
     #else
     public static func read() -> [Route]? { nil }
     #endif
+
+    // MARK: IPv6 기본 경로의 게이트웨이(라우터 링크로컬 fe80::) — NDP 대상 지정에 쓴다
+
+    static let inet6Family: UInt8 = 30
+
+    /// IPv6 라우트 덤프에서 기본 경로(::/0)의 게이트웨이(fe80::)를 꺼낸다. 인터페이스가 맞는 것을 먼저 고른다.
+    /// 바이트를 푸는 일이라 플랫폼과 상관없어 리눅스에서도 시험된다.
+    public static func parseIPv6Gateway(_ bytes: [UInt8], interfaceIndex: UInt32?) -> IPv6Address? {
+        let unspecified = IPv6Address([UInt8](repeating: 0, count: 16))
+        var fallback: IPv6Address?
+        var offset = 0
+        while offset + 4 <= bytes.count {
+            let length = Int(bytes[offset]) | Int(bytes[offset + 1]) << 8
+            guard length > 0, offset + length <= bytes.count else { break }
+            if length >= headerSize, bytes[offset + 2] == messageVersion,
+               let message = ipv6Message(bytes, from: offset, to: offset + length),
+               message.destination == nil || message.destination == unspecified,   // ::/0 (기본 경로)
+               let gateway = message.gateway, gateway.isLinkLocal {
+                if interfaceIndex == nil || message.interfaceIndex == interfaceIndex { return gateway }
+                fallback = fallback ?? gateway
+            }
+            offset += length
+        }
+        return fallback
+    }
+
+    private static func ipv6Message(_ bytes: [UInt8], from start: Int, to end: Int) -> (interfaceIndex: UInt32, destination: IPv6Address?, gateway: IPv6Address?)? {
+        let index = UInt32(littleEndian16(bytes, at: start + 4))
+        let present = littleEndian32(bytes, at: start + 12)
+        var destination: IPv6Address?
+        var gateway: IPv6Address?
+        var cursor = start + headerSize
+        for slot in 0..<slotCount where present & (1 << UInt32(slot)) != 0 {
+            guard cursor < end else { break }
+            let length = Int(bytes[cursor])
+            let available = min(length, end - cursor)
+            switch slot {
+            case destinationSlot: destination = inet6Address(bytes, at: cursor, length: available)
+            case gatewaySlot: gateway = inet6Address(bytes, at: cursor, length: available)
+            default: break
+            }
+            cursor += length > 0 ? 1 + ((length - 1) | 3) : 4
+        }
+        return (index, destination, gateway)
+    }
+
+    /// sockaddr_in6에서 16바이트 주소(len·fam(30)·port(2)·flow(4)·addr@8(16)·scope(4)). 주소가 없으면 nil.
+    private static func inet6Address(_ bytes: [UInt8], at cursor: Int, length: Int) -> IPv6Address? {
+        guard length >= 24, bytes[cursor + 1] == inet6Family else { return nil }
+        return IPv6Address(Array(bytes[(cursor + 8)..<(cursor + 24)]))
+    }
+
+    #if canImport(Darwin)
+    /// IPv6 기본 경로의 게이트웨이(라우터 fe80::)를 커널 라우팅 테이블에서 읽는다. 막히거나 없으면 nil.
+    public static func readIPv6Gateway(interfaceIndex: UInt32?) -> IPv6Address? {
+        // CTL_NET, PF_ROUTE, 0, AF_INET6(30), NET_RT_FLAGS, RTF_GATEWAY
+        var mib: [Int32] = [4, 17, 0, 30, 2, gatewayFlag]
+        for _ in 0..<3 {
+            var size = 0
+            guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0 else { return nil }
+            guard size > 0 else { return nil }
+            var buffer = [UInt8](repeating: 0, count: size)
+            let status = buffer.withUnsafeMutableBytes { raw in
+                sysctl(&mib, UInt32(mib.count), raw.baseAddress, &size, nil, 0)
+            }
+            if status == 0 { return parseIPv6Gateway(Array(buffer.prefix(size)), interfaceIndex: interfaceIndex) }
+            guard errno == ENOMEM else { return nil }
+        }
+        return nil
+    }
+    #else
+    public static func readIPv6Gateway(interfaceIndex: UInt32?) -> IPv6Address? { nil }
+    #endif
 }
 
 /// 공유기(기본 게이트웨이) 주소.
